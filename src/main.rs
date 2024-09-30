@@ -19,25 +19,98 @@ enum BoundError {
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
+enum Command {
+    #[command(name = "codeowner-analyze")]
+    CodeownerAnalyze,
+    #[command(name = "contributor-analyze")]
+    ContributorAnalyze,
+}
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
 struct Args {
+    #[command(subcommand)]
+    command: Command,
+
     #[arg(short, long, default_value = ".")]
     repo: String,
+
     #[arg(short, long)]
     since: Option<u32>,
+
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 fn main() -> Result<(), BoundError> {
     let args = Args::parse();
     let repo = Repository::open(&args.repo)
         .map_err(|_| BoundError::InvalidRepository(args.repo.clone()))?;
+
+    let analysis_data = analyze_repository(&repo, args.since)?;
+
+    match args.command {
+        Command::CodeownerAnalyze => print_codeowner_analysis(&analysis_data, args.verbose),
+        Command::ContributorAnalyze => print_contributor_analysis(&analysis_data, args.verbose),
+    }
+
+    Ok(())
+}
+
+fn print_codeowner_analysis(analysis_data: &AnalysisData, verbose: bool) {
+    for (owner, contributors) in &analysis_data.codeowner_stats {
+        println!("Codeowner: {}", owner);
+        for (contributor, (commits, additions, deletions)) in contributors {
+            println!(
+                "  Contributor: {} (C: {}, A: {}, D: {})",
+                contributor, commits, additions, deletions
+            );
+        }
+        if verbose {
+            if let Some(files) = analysis_data.file_details.get(owner) {
+                println!("  Files:");
+                for (file, (commits, additions, deletions)) in files {
+                    println!(
+                        "    {} (C: {}, A: {}, D: {})",
+                        file, commits, additions, deletions
+                    );
+                }
+            }
+        }
+        println!();
+    }
+}
+
+fn print_contributor_analysis(analysis_data: &AnalysisData, verbose: bool) {
+    for (contributor, owners) in &analysis_data.contributor_stats {
+        println!("Contributor: {}", contributor);
+        for (owner, (commits, additions, deletions)) in owners {
+            println!(
+                "  Codeowner: {} (C: {}, A: {}, D: {})",
+                owner, commits, additions, deletions
+            );
+            if verbose {
+                if let Some(files) = analysis_data.file_details.get(owner) {
+                    println!("    Files:");
+                    for (file, (file_commits, file_additions, file_deletions)) in files {
+                        println!(
+                            "      {} (C: {}, A: {}, D: {})",
+                            file, file_commits, file_additions, file_deletions
+                        );
+                    }
+                }
+            }
+        }
+        println!();
+    }
+}
+
+fn analyze_repository(repo: &Repository, since: Option<u32>) -> Result<AnalysisData, BoundError> {
     let mut revwalk = repo.revwalk()?;
-
     revwalk.push_head()?;
-
     revwalk.set_sorting(git2::Sort::TIME)?;
 
-    let mut author_file_stats: HashMap<(String, String, Vec<String>), (usize, usize, usize)> =
-        HashMap::new();
+    let mut analysis_data = AnalysisData::default();
 
     for oid in revwalk {
         let oid = oid?;
@@ -45,69 +118,103 @@ fn main() -> Result<(), BoundError> {
         let author = commit.author().name().unwrap_or("Unknown").to_string();
 
         let tree = commit.tree()?;
-        let potential_codeowner_paths = vec![".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
-        let codeowners_contents = potential_codeowner_paths.iter().find_map(|path| {
-            if let Ok(entry) = tree.get_path(std::path::Path::new(path)) {
-                let object = entry.to_object(&repo).ok()?;
-                let blob = object.as_blob()?;
-                let content = std::str::from_utf8(blob.content()).ok()?;
-                Some(content.to_string())
-            } else {
-                None
-            }
-        });
-        let codeowners = if let Some(contents) = codeowners_contents {
-            codeowners::from_reader(Cursor::new(contents))
-        } else {
-            println!(
-                "Warning: No CODEOWNERS file found in commit {}",
-                commit.id()
-            );
-            codeowners::from_reader(Cursor::new("".as_bytes()))
-        };
+        let codeowners = get_codeowners(&repo, &tree);
 
         let file_changes = get_commit_changes(&repo, &commit)?;
         for (file, changes) in file_changes {
             let owners = codeowners
                 .of(&file)
-                .unwrap_or(&Vec::new())
-                .iter()
-                .map(|owner| owner.to_string())
-                .collect::<Vec<String>>();
-            let stats = author_file_stats
-                .entry((author.clone(), file, owners))
-                .or_insert((0, 0, 0));
-            stats.0 += 1; // Increment commit count
-            stats.1 += changes.additions;
-            stats.2 += changes.deletions;
+                .map(|owners| {
+                    owners
+                        .iter()
+                        .map(|owner| owner.to_string())
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default();
+            update_stats(&mut analysis_data, &author, &file, &owners, &changes);
         }
 
-        // Break if since is set and we are past the time
-        if let Some(since) = args.since {
-            let commit_time = commit.time();
-            let commit_date = FixedOffset::east_opt(commit_time.offset_minutes() * 60)
-                .unwrap()
-                .timestamp_opt(commit_time.seconds(), 0)
-                .unwrap();
-            let now = Utc::now();
-            let since = now - Duration::days(since as i64);
-            if commit_date < since {
-                break;
-            }
+        if should_break(since, &commit) {
+            break;
         }
     }
 
-    print_author_file_statistics(&author_file_stats);
-
-    Ok(())
+    Ok(analysis_data)
 }
 
-fn print_author_file_statistics(
-    stats: &HashMap<(String, String, Vec<String>), (usize, usize, usize)>,
+fn get_codeowners(repo: &Repository, tree: &git2::Tree) -> codeowners::Owners {
+    let potential_codeowner_paths = vec![".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+    let codeowners_contents = potential_codeowner_paths.iter().find_map(|path| {
+        if let Ok(entry) = tree.get_path(std::path::Path::new(path)) {
+            let object = entry.to_object(repo).ok()?;
+            let blob = object.as_blob()?;
+            let content = std::str::from_utf8(blob.content()).ok()?;
+            Some(content.to_string())
+        } else {
+            None
+        }
+    });
+
+    if let Some(contents) = codeowners_contents {
+        codeowners::from_reader(Cursor::new(contents))
+    } else {
+        println!("Warning: No CODEOWNERS file found in this commit");
+        codeowners::from_reader(Cursor::new("".as_bytes()))
+    }
+}
+
+fn update_stats(
+    analysis_data: &mut AnalysisData,
+    author: &str,
+    file: &str,
+    owners: &[String],
+    changes: &FileChanges,
 ) {
-    for ((author, file, owners), (commits, additions, deletions)) in stats {
-        println!("{}: {} (Owners: {})", author, file, owners.join(", "));
-        println!("  C {}  +{}  -{}", commits, additions, deletions);
+    for owner in owners {
+        let codeowner_stats = analysis_data
+            .codeowner_stats
+            .entry(owner.to_string())
+            .or_default()
+            .entry(author.to_string())
+            .or_insert((0, 0, 0));
+        codeowner_stats.0 += 1;
+        codeowner_stats.1 += changes.additions;
+        codeowner_stats.2 += changes.deletions;
+
+        let contributor_stats = analysis_data
+            .contributor_stats
+            .entry(author.to_string())
+            .or_default()
+            .entry(owner.to_string())
+            .or_insert((0, 0, 0));
+        contributor_stats.0 += 1;
+        contributor_stats.1 += changes.additions;
+        contributor_stats.2 += changes.deletions;
+
+        let file_details = analysis_data
+            .file_details
+            .entry(owner.to_string())
+            .or_default()
+            .entry(file.to_string())
+            .or_insert((0, 0, 0));
+        file_details.0 += 1;
+        file_details.1 += changes.additions;
+        file_details.2 += changes.deletions;
+    }
+}
+
+fn should_break(since: Option<u32>, commit: &git2::Commit) -> bool {
+    if let Some(since) = since {
+        let commit_time = commit.time();
+        let commit_date = FixedOffset::east_opt(commit_time.offset_minutes() * 60)
+            .unwrap()
+            .timestamp_opt(commit_time.seconds(), 0)
+            .unwrap();
+        let now = Utc::now();
+        let since = now - Duration::days(since as i64);
+        commit_date < since
+    } else {
+        false
     }
 }
 
@@ -148,4 +255,11 @@ fn get_commit_changes(
 struct FileChanges {
     additions: usize,
     deletions: usize,
+}
+
+#[derive(Default)]
+struct AnalysisData {
+    codeowner_stats: HashMap<String, HashMap<String, (usize, usize, usize)>>,
+    contributor_stats: HashMap<String, HashMap<String, (usize, usize, usize)>>,
+    file_details: HashMap<String, HashMap<String, (usize, usize, usize)>>,
 }
