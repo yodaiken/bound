@@ -41,78 +41,221 @@ struct Args {
     since: Option<u32>,
     #[arg(short, long)]
     per_file: bool,
+    #[arg(long, value_enum)]
+    sort_by: Option<Vec<SortField>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
+enum SortField {
+    Codeowner,
+    Contributor,
+    File,
+    Commits,
+    Additions,
+    Deletions,
+    TotalChanges,
+}
 fn main() -> Result<(), BoundError> {
     let args = Args::parse();
     let repo = Repository::open(&args.repo)
         .map_err(|_| BoundError::InvalidRepository(args.repo.clone()))?;
 
     let analysis_data = analyze_repository(&repo, args.since)?;
+
+    let default_sort = vec![SortField::TotalChanges];
+    let sort_by = args.sort_by.as_deref().unwrap_or(&default_sort);
+
     match args.command {
-        Command::CodeownerAnalyze => print_codeowner_analysis(&analysis_data, args.per_file),
-        Command::ContributorAnalyze => print_contributor_analysis(&analysis_data, args.per_file),
+        Command::CodeownerAnalyze => {
+            print_codeowner_analysis(&analysis_data, args.per_file, sort_by)
+        }
+        Command::ContributorAnalyze => {
+            print_contributor_analysis(&analysis_data, args.per_file, sort_by)
+        }
     }
 
     Ok(())
 }
-fn print_codeowner_analysis(analysis_data: &AnalysisData, per_file: bool) {
+fn print_codeowner_analysis(analysis_data: &AnalysisData, per_file: bool, sort_by: &[SortField]) {
     if per_file {
-        println!("Codeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes");
-        for (owner, files) in &analysis_data.file_details {
-            for (file, (commits, additions, deletions)) in files {
-                let total_changes = additions + deletions;
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
-                    owner, file, commits, additions, deletions, total_changes
-                );
+        let mut data: Vec<_> = analysis_data
+            .file_details
+            .iter()
+            .flat_map(|(owner, files)| {
+                files
+                    .iter()
+                    .map(move |(file, (commits, additions, deletions))| {
+                        (owner, file, *commits, *additions, *deletions)
+                    })
+            })
+            .collect();
+
+        data.sort_by(|a, b| {
+            for field in sort_by {
+                let cmp = match field {
+                    SortField::Codeowner => a.0.cmp(b.0),
+                    SortField::File => a.1.cmp(b.1),
+                    SortField::Commits => a.2.cmp(&b.2),
+                    SortField::Additions => a.3.cmp(&b.3),
+                    SortField::Deletions => a.4.cmp(&b.4),
+                    SortField::TotalChanges => (a.3 + a.4).cmp(&(b.3 + b.4)),
+                    _ => std::cmp::Ordering::Equal,
+                };
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp;
+                }
             }
+            std::cmp::Ordering::Equal
+        });
+
+        println!("Codeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes");
+        for (owner, file, commits, additions, deletions) in data {
+            let total_changes = additions + deletions;
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                owner, file, commits, additions, deletions, total_changes
+            );
         }
     } else {
-        println!("Codeowner\tContributor\tCommits\tAdditions\tDeletions\tTotal Changes");
-        for (owner, contributors) in &analysis_data.codeowner_stats {
-            for (contributor, (commits, additions, deletions)) in contributors {
-                let total_changes = additions + deletions;
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
-                    owner, contributor, commits, additions, deletions, total_changes
-                );
+        let mut data: Vec<_> = analysis_data
+            .codeowner_stats
+            .iter()
+            .flat_map(|(owner, contributors)| {
+                contributors
+                    .iter()
+                    .map(move |(contributor, (commits, additions, deletions))| {
+                        (owner, contributor, *commits, *additions, *deletions)
+                    })
+            })
+            .collect();
+
+        data.sort_by(|a, b| {
+            for field in sort_by {
+                let cmp = match field {
+                    SortField::Codeowner => a.0.cmp(b.0),
+                    SortField::Contributor => a.1.cmp(b.1),
+                    SortField::Commits => a.2.cmp(&b.2),
+                    SortField::Additions => a.3.cmp(&b.3),
+                    SortField::Deletions => a.4.cmp(&b.4),
+                    SortField::TotalChanges => (a.3 + a.4).cmp(&(b.3 + b.4)),
+                    _ => std::cmp::Ordering::Equal,
+                };
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp.reverse();
+                }
             }
+            std::cmp::Ordering::Equal
+        });
+
+        println!("Codeowner\tContributor\tCommits\tAdditions\tDeletions\tTotal Changes");
+        for (owner, contributor, commits, additions, deletions) in data {
+            let total_changes = additions + deletions;
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                owner, contributor, commits, additions, deletions, total_changes
+            );
         }
     }
 }
-fn print_contributor_analysis(analysis_data: &AnalysisData, per_file: bool) {
+fn print_contributor_analysis(analysis_data: &AnalysisData, per_file: bool, sort_by: &[SortField]) {
     if per_file {
-        println!("Contributor\tCodeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes");
-        for (contributor, owners) in &analysis_data.contributor_stats {
-            for (owner, _) in owners {
-                if let Some(files) = analysis_data.file_details.get(owner) {
-                    for (file, (file_commits, file_additions, file_deletions)) in files {
-                        let total_changes = file_additions + file_deletions;
-                        println!(
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            contributor,
-                            owner,
-                            file,
-                            file_commits,
-                            file_additions,
-                            file_deletions,
-                            total_changes
-                        );
-                    }
+        let mut data: Vec<_> = analysis_data
+            .contributor_stats
+            .iter()
+            .flat_map(|(contributor, owners)| {
+                owners
+                    .iter()
+                    .flat_map(move |(owner, (commits, additions, deletions))| {
+                        if let Some(files) = analysis_data.file_details.get(owner) {
+                            files
+                                .iter()
+                                .map(
+                                    move |(
+                                        file,
+                                        (file_commits, file_additions, file_deletions),
+                                    )| {
+                                        (
+                                            contributor,
+                                            owner,
+                                            file,
+                                            *file_commits,
+                                            *file_additions,
+                                            *file_deletions,
+                                        )
+                                    },
+                                )
+                                .collect::<Vec<_>>()
+                        } else {
+                            vec![]
+                        }
+                    })
+            })
+            .collect();
+
+        data.sort_by(|a, b| {
+            for field in sort_by {
+                let cmp = match field {
+                    SortField::Contributor => a.0.cmp(b.0),
+                    SortField::Codeowner => a.1.cmp(b.1),
+                    SortField::File => a.2.cmp(b.2),
+                    SortField::Commits => a.3.cmp(&b.3),
+                    SortField::Additions => a.4.cmp(&b.4),
+                    SortField::Deletions => a.5.cmp(&b.5),
+                    SortField::TotalChanges => (a.4 + a.5).cmp(&(b.4 + b.5)),
+                };
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp.reverse();
                 }
             }
+            std::cmp::Ordering::Equal
+        });
+
+        println!("Contributor\tCodeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes");
+        for (contributor, owner, file, commits, additions, deletions) in data {
+            let total_changes = additions + deletions;
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                contributor, owner, file, commits, additions, deletions, total_changes
+            );
         }
     } else {
-        println!("Contributor\tCodeowner\tCommits\tAdditions\tDeletions\tTotal Changes");
-        for (contributor, owners) in &analysis_data.contributor_stats {
-            for (owner, (commits, additions, deletions)) in owners {
-                let total_changes = additions + deletions;
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
-                    contributor, owner, commits, additions, deletions, total_changes
-                );
+        let mut data: Vec<_> = analysis_data
+            .contributor_stats
+            .iter()
+            .flat_map(|(contributor, owners)| {
+                owners
+                    .iter()
+                    .map(move |(owner, (commits, additions, deletions))| {
+                        (contributor, owner, *commits, *additions, *deletions)
+                    })
+            })
+            .collect();
+
+        data.sort_by(|a, b| {
+            for field in sort_by {
+                let cmp = match field {
+                    SortField::Contributor => a.0.cmp(b.0),
+                    SortField::Codeowner => a.1.cmp(b.1),
+                    SortField::Commits => a.2.cmp(&b.2),
+                    SortField::Additions => a.3.cmp(&b.3),
+                    SortField::Deletions => a.4.cmp(&b.4),
+                    SortField::TotalChanges => (a.3 + a.4).cmp(&(b.3 + b.4)),
+                    _ => std::cmp::Ordering::Equal,
+                };
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp.reverse();
+                }
             }
+            std::cmp::Ordering::Equal
+        });
+
+        println!("Contributor\tCodeowner\tCommits\tAdditions\tDeletions\tTotal Changes");
+        for (contributor, owner, commits, additions, deletions) in data {
+            let total_changes = additions + deletions;
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                contributor, owner, commits, additions, deletions, total_changes
+            );
         }
     }
 }
