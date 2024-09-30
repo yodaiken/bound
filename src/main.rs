@@ -175,7 +175,7 @@ fn print_contributor_analysis(analysis_data: &AnalysisData, per_file: bool, sort
             .flat_map(|(contributor, owners)| {
                 owners
                     .iter()
-                    .flat_map(move |(owner, (commits, additions, deletions))| {
+                    .flat_map(move |(owner, (_commits, _additions, _deletions))| {
                         if let Some(files) = analysis_data.file_details.get(owner) {
                             files
                                 .iter()
