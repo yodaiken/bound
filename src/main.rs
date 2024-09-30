@@ -58,50 +58,64 @@ fn main() -> Result<(), BoundError> {
 }
 
 fn print_codeowner_analysis(analysis_data: &AnalysisData, verbose: bool) {
+    println!("Codeowner\tContributor\tCommits\tAdditions\tDeletions\tTotal Changes");
     for (owner, contributors) in &analysis_data.codeowner_stats {
-        println!("Codeowner: {}", owner);
         for (contributor, (commits, additions, deletions)) in contributors {
+            let total_changes = additions + deletions;
             println!(
-                "  Contributor: {} (C: {}, A: {}, D: {})",
-                contributor, commits, additions, deletions
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                owner, contributor, commits, additions, deletions, total_changes
             );
         }
         if verbose {
             if let Some(files) = analysis_data.file_details.get(owner) {
-                println!("  Files:");
+                println!("\n\nCodeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes");
                 for (file, (commits, additions, deletions)) in files {
+                    let total_changes = additions + deletions;
                     println!(
-                        "    {} (C: {}, A: {}, D: {})",
-                        file, commits, additions, deletions
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        owner, file, commits, additions, deletions, total_changes
                     );
                 }
             }
         }
-        println!();
     }
 }
 
 fn print_contributor_analysis(analysis_data: &AnalysisData, verbose: bool) {
+    println!("Contributor\tCodeowner\tCommits\tAdditions\tDeletions\tTotal Changes");
     for (contributor, owners) in &analysis_data.contributor_stats {
-        println!("Contributor: {}", contributor);
         for (owner, (commits, additions, deletions)) in owners {
+            let total_changes = additions + deletions;
             println!(
-                "  Codeowner: {} (C: {}, A: {}, D: {})",
-                owner, commits, additions, deletions
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                contributor, owner, commits, additions, deletions, total_changes
             );
-            if verbose {
-                if let Some(files) = analysis_data.file_details.get(owner) {
-                    println!("    Files:");
-                    for (file, (file_commits, file_additions, file_deletions)) in files {
-                        println!(
-                            "      {} (C: {}, A: {}, D: {})",
-                            file, file_commits, file_additions, file_deletions
-                        );
+        }
+        if verbose {
+            println!(
+                "\n\nContributor\tCodeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes"
+            );
+            for (owner, files) in &analysis_data.file_details {
+                if let Some(owner_stats) = analysis_data.contributor_stats.get(contributor) {
+                    if owner_stats.contains_key(owner) {
+                        for (file, (file_commits, file_additions, file_deletions)) in files {
+                            let total_changes = file_additions + file_deletions;
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                contributor,
+                                owner,
+                                file,
+                                file_commits,
+                                file_additions,
+                                file_deletions,
+                                total_changes
+                            );
+                        }
                     }
                 }
             }
         }
-        println!();
     }
 }
 
@@ -158,7 +172,7 @@ fn get_codeowners(repo: &Repository, tree: &git2::Tree) -> codeowners::Owners {
     if let Some(contents) = codeowners_contents {
         codeowners::from_reader(Cursor::new(contents))
     } else {
-        println!("Warning: No CODEOWNERS file found in this commit");
+        // prinwarn!("Warning: No CODEOWNERS file found in this commit");
         codeowners::from_reader(Cursor::new("".as_bytes()))
     }
 }
@@ -170,7 +184,13 @@ fn update_stats(
     owners: &[String],
     changes: &FileChanges,
 ) {
-    for owner in owners {
+    let effective_owners = if owners.is_empty() {
+        vec![String::from("<UNOWNED>")]
+    } else {
+        owners.to_vec()
+    };
+
+    for owner in &effective_owners {
         let codeowner_stats = analysis_data
             .codeowner_stats
             .entry(owner.to_string())
