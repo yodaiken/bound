@@ -118,9 +118,9 @@ fn analyze_repository(repo: &Repository, since: Option<u32>) -> Result<AnalysisD
         let author = commit.author().name().unwrap_or("Unknown").to_string();
 
         let tree = commit.tree()?;
-        let codeowners = get_codeowners(&repo, &tree);
+        let codeowners = get_codeowners(repo, &tree);
 
-        let file_changes = get_commit_changes(&repo, &commit)?;
+        let file_changes = get_commit_changes(repo, &commit)?;
         for (file, changes) in file_changes {
             let owners = codeowners
                 .of(&file)
@@ -143,7 +143,7 @@ fn analyze_repository(repo: &Repository, since: Option<u32>) -> Result<AnalysisD
 }
 
 fn get_codeowners(repo: &Repository, tree: &git2::Tree) -> codeowners::Owners {
-    let potential_codeowner_paths = vec![".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+    let potential_codeowner_paths = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
     let codeowners_contents = potential_codeowner_paths.iter().find_map(|path| {
         if let Ok(entry) = tree.get_path(std::path::Path::new(path)) {
             let object = entry.to_object(repo).ok()?;
