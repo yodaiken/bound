@@ -26,6 +26,8 @@ enum Command {
     CodeownerAnalyze,
     #[command(name = "contributor-analyze")]
     ContributorAnalyze,
+    #[command(name = "time-analyze")]
+    TimeAnalysis,
 }
 
 #[derive(Parser, Debug)]
@@ -64,23 +66,38 @@ fn main() -> Result<(), BoundError> {
     let args = Args::parse();
     let repo = Repository::open(&args.repo)
         .map_err(|_| BoundError::InvalidRepository(args.repo.clone()))?;
-
-    let analysis_data = analyze_repository(
-        &repo,
-        args.since,
-        &args.filter_codeowners,
-        &args.filter_contributors,
-    )?;
-
-    let default_sort = vec![SortField::TotalChanges];
-    let sort_by = args.sort_by.as_deref().unwrap_or(&default_sort);
-
+    //
     match args.command {
-        Command::CodeownerAnalyze => {
-            print_codeowner_analysis(&analysis_data, args.per_file, sort_by)
+        Command::CodeownerAnalyze | Command::ContributorAnalyze => {
+            let analysis_data = analyze_repository(
+                &repo,
+                args.since,
+                &args.filter_codeowners,
+                &args.filter_contributors,
+            )?;
+
+            let default_sort = vec![SortField::TotalChanges];
+            let sort_by = args.sort_by.as_deref().unwrap_or(&default_sort);
+
+            match args.command {
+                Command::CodeownerAnalyze => {
+                    print_codeowner_analysis(&analysis_data, args.per_file, sort_by)
+                }
+                Command::ContributorAnalyze => {
+                    print_contributor_analysis(&analysis_data, args.per_file, sort_by)
+                }
+                _ => unreachable!(),
+            }
         }
-        Command::ContributorAnalyze => {
-            print_contributor_analysis(&analysis_data, args.per_file, sort_by)
+        Command::TimeAnalysis => {
+            let period_data = analyze_time_periods(
+                &repo,
+                7, // default period of 1 week
+                4, // default 4 periods
+                &args.filter_codeowners,
+                &args.filter_contributors,
+            )?;
+            print_time_analysis(&period_data, 7);
         }
     }
 
@@ -167,6 +184,37 @@ fn print_codeowner_analysis(analysis_data: &AnalysisData, per_file: bool, sort_b
         }
     }
 }
+
+fn print_time_analysis(
+    period_data: &[HashMap<String, HashMap<String, (usize, usize, usize, usize)>>],
+    period_days: u32,
+) {
+    println!("Time Analysis (Period: {} days)", period_days);
+    println!("Period\tCodeowner\tContributor\tCommits\tAdditions\tDeletions\tTotal Changes");
+
+    for (i, period) in period_data.iter().enumerate() {
+        let period_start = i * period_days as usize;
+        let period_end = period_start + period_days as usize - 1;
+
+        for (owner, contributors) in period.iter() {
+            for (contributor, (commits, additions, deletions, total_changes)) in contributors {
+                println!(
+                    "{}-{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    period_start,
+                    period_end,
+                    owner,
+                    contributor,
+                    commits,
+                    additions,
+                    deletions,
+                    total_changes
+                );
+            }
+        }
+        println!(); // Add a blank line between periods for readability
+    }
+}
+
 fn print_contributor_analysis(analysis_data: &AnalysisData, per_file: bool, sort_by: &[SortField]) {
     if per_file {
         let mut data: Vec<_> = analysis_data
@@ -296,6 +344,95 @@ fn find_break_commit(
     }
 
     Ok(break_commit)
+}
+
+fn analyze_time_periods(
+    repo: &Repository,
+    period_days: u32,
+    num_periods: u32,
+    filter_codeowners: &Option<Vec<String>>,
+    filter_contributors: &Option<Vec<String>>,
+) -> Result<Vec<HashMap<String, HashMap<String, (usize, usize, usize, usize)>>>, BoundError> {
+    let mut period_data = Vec::new();
+    let now = Utc::now();
+
+    for i in 0..num_periods {
+        let period_end = now - Duration::days((i * period_days) as i64);
+        let period_start = period_end - Duration::days(period_days as i64);
+
+        let mut revwalk = repo.revwalk()?;
+        revwalk.push_head()?;
+        revwalk.set_sorting(git2::Sort::TIME)?;
+
+        let mut period_stats: HashMap<String, HashMap<String, (usize, usize, usize, usize)>> =
+            HashMap::new();
+
+        for oid in revwalk {
+            let oid = oid?;
+            let commit = repo.find_commit(oid)?;
+            let commit_time = FixedOffset::east_opt(commit.time().offset_minutes() * 60)
+                .unwrap()
+                .timestamp_opt(commit.time().seconds(), 0)
+                .unwrap();
+
+            if commit_time < period_start {
+                break;
+            }
+
+            if commit_time <= period_end {
+                let author = commit.author().name().unwrap_or("Unknown").to_string();
+                if let Some(filter) = filter_contributors {
+                    if !filter.contains(&author) {
+                        continue;
+                    }
+                }
+
+                let tree = commit.tree()?;
+                let codeowners = get_codeowners(repo, &tree);
+
+                let file_changes = get_commit_changes(repo, &commit)?;
+                for (file, changes) in file_changes {
+                    let owners = codeowners
+                        .of(&file)
+                        .map(|owners| {
+                            owners
+                                .iter()
+                                .map(|owner| owner.to_string())
+                                .collect::<Vec<String>>()
+                        })
+                        .unwrap_or_default();
+
+                    let effective_owners = if owners.is_empty() {
+                        vec![String::from("<UNOWNED>")]
+                    } else {
+                        owners
+                    };
+
+                    for owner in effective_owners {
+                        if let Some(filter) = filter_codeowners {
+                            if !filter.contains(&owner) {
+                                continue;
+                            }
+                        }
+                        let contributor_stats = period_stats
+                            .entry(owner)
+                            .or_default()
+                            .entry(author.clone())
+                            .or_insert((0, 0, 0, 0));
+                        contributor_stats.0 += 1; // Increment commits
+                        contributor_stats.1 += changes.additions;
+                        contributor_stats.2 += changes.deletions;
+                        contributor_stats.3 = contributor_stats.1 + contributor_stats.2;
+                        // Total changes
+                    }
+                }
+            }
+        }
+
+        period_data.push(period_stats);
+    }
+
+    Ok(period_data)
 }
 
 fn analyze_repository(
