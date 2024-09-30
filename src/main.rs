@@ -270,26 +270,72 @@ fn print_contributor_analysis(analysis_data: &AnalysisData, per_file: bool, sort
     }
 }
 
+fn find_break_commit(
+    repo: &Repository,
+    since_time: chrono::DateTime<Utc>,
+) -> Result<Option<git2::Oid>, BoundError> {
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push_head()?;
+    revwalk.set_sorting(git2::Sort::TIME)?;
+
+    let mut break_commit = None;
+
+    for oid in revwalk {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        let commit_time = commit.time();
+        let commit_date = FixedOffset::east_opt(commit_time.offset_minutes() * 60)
+            .unwrap()
+            .timestamp_opt(commit_time.seconds(), 0)
+            .unwrap();
+
+        if commit_date < since_time {
+            break_commit = Some(oid);
+            break;
+        }
+    }
+
+    Ok(break_commit)
+}
+
 fn analyze_repository(
     repo: &Repository,
     since: Option<u32>,
     filter_codeowners: &Option<Vec<String>>,
     filter_contributors: &Option<Vec<String>>,
 ) -> Result<AnalysisData, BoundError> {
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
-    revwalk.set_sorting(git2::Sort::TIME)?;
-
     let mut analysis_data = AnalysisData::default();
+    let mut revwalk = repo.revwalk()?;
+
+    if let Some(since_days) = since {
+        let since_time = Utc::now() - Duration::days(since_days as i64);
+        if let Some(break_commit) = find_break_commit(repo, since_time)? {
+            revwalk.push_range(&format!("{}..HEAD", break_commit))?;
+        } else {
+            revwalk.push_head()?;
+        }
+    } else {
+        revwalk.push_head()?;
+    }
+
+    revwalk.set_sorting(git2::Sort::TIME)?;
 
     // Count total number of commits
     let total_commits = revwalk.count();
 
     // Reset revwalk for actual processing
     revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
+    if let Some(since_days) = since {
+        let since_time = Utc::now() - Duration::days(since_days as i64);
+        if let Some(break_commit) = find_break_commit(repo, since_time)? {
+            revwalk.push_range(&format!("{}..HEAD", break_commit))?;
+        } else {
+            revwalk.push_head()?;
+        }
+    } else {
+        revwalk.push_head()?;
+    }
     revwalk.set_sorting(git2::Sort::TIME)?;
-
     let progress_bar = ProgressBar::new(total_commits as u64);
 
     for oid in revwalk {
@@ -333,10 +379,6 @@ fn analyze_repository(
         }
 
         progress_bar.inc(1);
-
-        if should_break(since, &commit) {
-            break;
-        }
     }
 
     progress_bar.finish();
@@ -408,21 +450,6 @@ fn update_stats(
         file_details.0 += 1;
         file_details.1 += changes.additions;
         file_details.2 += changes.deletions;
-    }
-}
-
-fn should_break(since: Option<u32>, commit: &git2::Commit) -> bool {
-    if let Some(since) = since {
-        let commit_time = commit.time();
-        let commit_date = FixedOffset::east_opt(commit_time.offset_minutes() * 60)
-            .unwrap()
-            .timestamp_opt(commit_time.seconds(), 0)
-            .unwrap();
-        let now = Utc::now();
-        let since = now - Duration::days(since as i64);
-        commit_date < since
-    } else {
-        false
     }
 }
 
