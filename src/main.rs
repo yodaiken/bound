@@ -43,6 +43,11 @@ struct Args {
     per_file: bool,
     #[arg(long, value_enum)]
     sort_by: Option<Vec<SortField>>,
+
+    #[arg(long, value_delimiter = ',')]
+    filter_codeowners: Option<Vec<String>>,
+    #[arg(long, value_delimiter = ',')]
+    filter_contributors: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
@@ -60,7 +65,12 @@ fn main() -> Result<(), BoundError> {
     let repo = Repository::open(&args.repo)
         .map_err(|_| BoundError::InvalidRepository(args.repo.clone()))?;
 
-    let analysis_data = analyze_repository(&repo, args.since)?;
+    let analysis_data = analyze_repository(
+        &repo,
+        args.since,
+        &args.filter_codeowners,
+        &args.filter_contributors,
+    )?;
 
     let default_sort = vec![SortField::TotalChanges];
     let sort_by = args.sort_by.as_deref().unwrap_or(&default_sort);
@@ -260,7 +270,12 @@ fn print_contributor_analysis(analysis_data: &AnalysisData, per_file: bool, sort
     }
 }
 
-fn analyze_repository(repo: &Repository, since: Option<u32>) -> Result<AnalysisData, BoundError> {
+fn analyze_repository(
+    repo: &Repository,
+    since: Option<u32>,
+    filter_codeowners: &Option<Vec<String>>,
+    filter_contributors: &Option<Vec<String>>,
+) -> Result<AnalysisData, BoundError> {
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
     revwalk.set_sorting(git2::Sort::TIME)?;
@@ -282,6 +297,13 @@ fn analyze_repository(repo: &Repository, since: Option<u32>) -> Result<AnalysisD
         let commit = repo.find_commit(oid)?;
         let author = commit.author().name().unwrap_or("Unknown").to_string();
 
+        // Apply contributor filter
+        if let Some(filter) = filter_contributors {
+            if !filter.contains(&author) {
+                continue;
+            }
+        }
+
         let tree = commit.tree()?;
         let codeowners = get_codeowners(repo, &tree);
 
@@ -296,6 +318,17 @@ fn analyze_repository(repo: &Repository, since: Option<u32>) -> Result<AnalysisD
                         .collect::<Vec<String>>()
                 })
                 .unwrap_or_default();
+
+            // Apply codeowner filter
+            if let Some(filter) = filter_codeowners {
+                if owners.is_empty() && !filter.contains(&"<UNOWNED>".to_string()) {
+                    continue;
+                }
+                if !owners.iter().any(|owner| filter.contains(owner)) {
+                    continue;
+                }
+            }
+
             update_stats(&mut analysis_data, &author, &file, &owners, &changes);
         }
 
