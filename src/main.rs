@@ -7,6 +7,8 @@ use std::io::Cursor;
 
 use thiserror::Error;
 
+use indicatif::ProgressBar;
+
 use clap::Parser;
 
 #[derive(Error, Debug)]
@@ -37,9 +39,8 @@ struct Args {
 
     #[arg(short, long)]
     since: Option<u32>,
-
     #[arg(short, long)]
-    verbose: bool,
+    per_file: bool,
 }
 
 fn main() -> Result<(), BoundError> {
@@ -48,72 +49,69 @@ fn main() -> Result<(), BoundError> {
         .map_err(|_| BoundError::InvalidRepository(args.repo.clone()))?;
 
     let analysis_data = analyze_repository(&repo, args.since)?;
-
     match args.command {
-        Command::CodeownerAnalyze => print_codeowner_analysis(&analysis_data, args.verbose),
-        Command::ContributorAnalyze => print_contributor_analysis(&analysis_data, args.verbose),
+        Command::CodeownerAnalyze => print_codeowner_analysis(&analysis_data, args.per_file),
+        Command::ContributorAnalyze => print_contributor_analysis(&analysis_data, args.per_file),
     }
 
     Ok(())
 }
-
-fn print_codeowner_analysis(analysis_data: &AnalysisData, verbose: bool) {
-    println!("Codeowner\tContributor\tCommits\tAdditions\tDeletions\tTotal Changes");
-    for (owner, contributors) in &analysis_data.codeowner_stats {
-        for (contributor, (commits, additions, deletions)) in contributors {
-            let total_changes = additions + deletions;
-            println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                owner, contributor, commits, additions, deletions, total_changes
-            );
+fn print_codeowner_analysis(analysis_data: &AnalysisData, per_file: bool) {
+    if per_file {
+        println!("Codeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes");
+        for (owner, files) in &analysis_data.file_details {
+            for (file, (commits, additions, deletions)) in files {
+                let total_changes = additions + deletions;
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    owner, file, commits, additions, deletions, total_changes
+                );
+            }
         }
-        if verbose {
-            if let Some(files) = analysis_data.file_details.get(owner) {
-                println!("\n\nCodeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes");
-                for (file, (commits, additions, deletions)) in files {
-                    let total_changes = additions + deletions;
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}\t{}",
-                        owner, file, commits, additions, deletions, total_changes
-                    );
-                }
+    } else {
+        println!("Codeowner\tContributor\tCommits\tAdditions\tDeletions\tTotal Changes");
+        for (owner, contributors) in &analysis_data.codeowner_stats {
+            for (contributor, (commits, additions, deletions)) in contributors {
+                let total_changes = additions + deletions;
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    owner, contributor, commits, additions, deletions, total_changes
+                );
             }
         }
     }
 }
-
-fn print_contributor_analysis(analysis_data: &AnalysisData, verbose: bool) {
-    println!("Contributor\tCodeowner\tCommits\tAdditions\tDeletions\tTotal Changes");
-    for (contributor, owners) in &analysis_data.contributor_stats {
-        for (owner, (commits, additions, deletions)) in owners {
-            let total_changes = additions + deletions;
-            println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                contributor, owner, commits, additions, deletions, total_changes
-            );
-        }
-        if verbose {
-            println!(
-                "\n\nContributor\tCodeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes"
-            );
-            for (owner, files) in &analysis_data.file_details {
-                if let Some(owner_stats) = analysis_data.contributor_stats.get(contributor) {
-                    if owner_stats.contains_key(owner) {
-                        for (file, (file_commits, file_additions, file_deletions)) in files {
-                            let total_changes = file_additions + file_deletions;
-                            println!(
-                                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                contributor,
-                                owner,
-                                file,
-                                file_commits,
-                                file_additions,
-                                file_deletions,
-                                total_changes
-                            );
-                        }
+fn print_contributor_analysis(analysis_data: &AnalysisData, per_file: bool) {
+    if per_file {
+        println!("Contributor\tCodeowner\tFile\tCommits\tAdditions\tDeletions\tTotal Changes");
+        for (contributor, owners) in &analysis_data.contributor_stats {
+            for (owner, _) in owners {
+                if let Some(files) = analysis_data.file_details.get(owner) {
+                    for (file, (file_commits, file_additions, file_deletions)) in files {
+                        let total_changes = file_additions + file_deletions;
+                        println!(
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            contributor,
+                            owner,
+                            file,
+                            file_commits,
+                            file_additions,
+                            file_deletions,
+                            total_changes
+                        );
                     }
                 }
+            }
+        }
+    } else {
+        println!("Contributor\tCodeowner\tCommits\tAdditions\tDeletions\tTotal Changes");
+        for (contributor, owners) in &analysis_data.contributor_stats {
+            for (owner, (commits, additions, deletions)) in owners {
+                let total_changes = additions + deletions;
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    contributor, owner, commits, additions, deletions, total_changes
+                );
             }
         }
     }
@@ -125,6 +123,16 @@ fn analyze_repository(repo: &Repository, since: Option<u32>) -> Result<AnalysisD
     revwalk.set_sorting(git2::Sort::TIME)?;
 
     let mut analysis_data = AnalysisData::default();
+
+    // Count total number of commits
+    let total_commits = revwalk.count();
+
+    // Reset revwalk for actual processing
+    revwalk = repo.revwalk()?;
+    revwalk.push_head()?;
+    revwalk.set_sorting(git2::Sort::TIME)?;
+
+    let progress_bar = ProgressBar::new(total_commits as u64);
 
     for oid in revwalk {
         let oid = oid?;
@@ -148,10 +156,14 @@ fn analyze_repository(repo: &Repository, since: Option<u32>) -> Result<AnalysisD
             update_stats(&mut analysis_data, &author, &file, &owners, &changes);
         }
 
+        progress_bar.inc(1);
+
         if should_break(since, &commit) {
             break;
         }
     }
+
+    progress_bar.finish();
 
     Ok(analysis_data)
 }
