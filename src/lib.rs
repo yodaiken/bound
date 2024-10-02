@@ -201,6 +201,7 @@ fn get_commit_changes(
 
 pub struct ContributorFileStats<T> {
     pub author: String,
+    pub codeowner: String,
     pub path: String,
     pub insertions: usize,
     pub deletions: usize,
@@ -223,12 +224,18 @@ where
         let commit_info = get_commit_info(repo, &commit)?;
         let date_group = date_group_fn(commit_info.date);
 
+        let tree = commit.tree()?;
+        let codeowners = get_codeowners(repo, &tree);
+
         for file_change in commit_info.file_changes {
+            let codeowner = get_codeowner(&codeowners, &file_change.path);
+
             let index = file_stats
                 .binary_search_by(|stats| {
                     stats
                         .date_group
                         .cmp(&date_group)
+                        .then(stats.codeowner.cmp(&codeowner))
                         .then(stats.author.cmp(&commit_info.author))
                         .then(stats.path.cmp(&file_change.path))
                 })
@@ -236,6 +243,7 @@ where
 
             if index < file_stats.len()
                 && file_stats[index].date_group == date_group
+                && file_stats[index].codeowner == codeowner
                 && file_stats[index].author == commit_info.author
                 && file_stats[index].path == file_change.path
             {
@@ -247,6 +255,7 @@ where
                     ContributorFileStats {
                         author: commit_info.author.clone(),
                         path: file_change.path,
+                        codeowner,
                         insertions: file_change.insertions,
                         deletions: file_change.deletions,
                         date_group: date_group.clone(),
@@ -257,4 +266,32 @@ where
     }
 
     Ok(file_stats)
+}
+
+fn get_codeowner(codeowners: &codeowners::Owners, path: &str) -> String {
+    match codeowners.of(path) {
+        None => "<Unowned>".to_owned(),
+        Some(owners) => owners
+            .iter()
+            .map(|owner| owner.to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
+    }
+}
+
+fn get_codeowners(repo: &Repository, tree: &git2::Tree) -> codeowners::Owners {
+    let potential_codeowner_paths = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+    let codeowners_contents = potential_codeowner_paths.iter().find_map(|path| {
+        tree.get_path(std::path::Path::new(path))
+            .ok()
+            .and_then(|entry| entry.to_object(repo).ok())
+            .and_then(|object| object.into_blob().ok())
+    });
+
+    if let Some(blob) = codeowners_contents {
+        codeowners::from_reader(blob.content())
+    } else {
+        // prinwarn!("Warning: No CODEOWNERS file found in this commit");
+        codeowners::from_reader(&[] as &[u8])
+    }
 }

@@ -124,11 +124,12 @@ fn handle_file_stats_command(
 
     let file_stats = bound::collect_file_stats(repo, commits, date_group_fn)?;
 
-    println!("DateGroup\tAuthor\tFile\tInsertions\tDeletions");
+    println!("DateGroup\tCodeowner\tAuthor\tFile\tInsertions\tDeletions");
     for stat in file_stats {
         println!(
-            "{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}",
             stat.date_group.replace("\t", "\\t"),
+            stat.codeowner.replace("\t", "\\t"),
             stat.author.replace("\t", "\\t"),
             stat.path.replace("\t", "\\t"),
             stat.insertions,
