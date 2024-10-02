@@ -128,7 +128,11 @@ fn handle_file_stats_command(
     for stat in file_stats {
         println!(
             "{}\t{}\t{}\t{}\t{}",
-            stat.date_group, stat.author, stat.path, stat.insertions, stat.deletions
+            stat.date_group.replace("\t", "\\t"),
+            stat.author.replace("\t", "\\t"),
+            stat.path.replace("\t", "\\t"),
+            stat.insertions,
+            stat.deletions
         );
     }
 
