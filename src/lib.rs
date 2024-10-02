@@ -196,3 +196,65 @@ fn get_commit_changes(
 
     Ok((file_changes, total_stats))
 }
+
+// ----
+
+pub struct ContributorFileStats<T> {
+    pub author: String,
+    pub path: String,
+    pub insertions: usize,
+    pub deletions: usize,
+    pub date_group: T,
+}
+
+pub fn collect_file_stats<'repo, T: Clone, F>(
+    repo: &'repo Repository,
+    commits: impl Iterator<Item = Result<Commit<'repo>, git2::Error>>,
+    date_group_fn: F,
+) -> Result<Vec<ContributorFileStats<T>>, BoundError>
+where
+    F: Fn(DateTime<Utc>) -> T,
+    T: Ord + Clone,
+{
+    let mut file_stats: Vec<ContributorFileStats<T>> = Vec::new();
+
+    for commit_result in commits {
+        let commit = commit_result?;
+        let commit_info = get_commit_info(repo, &commit)?;
+        let date_group = date_group_fn(commit_info.date);
+
+        for file_change in commit_info.file_changes {
+            let index = file_stats
+                .binary_search_by(|stats| {
+                    stats
+                        .date_group
+                        .cmp(&date_group)
+                        .then(stats.author.cmp(&commit_info.author))
+                        .then(stats.path.cmp(&file_change.path))
+                })
+                .unwrap_or_else(|x| x);
+
+            if index < file_stats.len()
+                && file_stats[index].date_group == date_group
+                && file_stats[index].author == commit_info.author
+                && file_stats[index].path == file_change.path
+            {
+                file_stats[index].insertions += file_change.insertions;
+                file_stats[index].deletions += file_change.deletions;
+            } else {
+                file_stats.insert(
+                    index,
+                    ContributorFileStats {
+                        author: commit_info.author.clone(),
+                        path: file_change.path,
+                        insertions: file_change.insertions,
+                        deletions: file_change.deletions,
+                        date_group: date_group.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(file_stats)
+}

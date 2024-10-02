@@ -4,6 +4,14 @@ use clap::{Parser, Subcommand};
 use git2::Repository;
 use std::path::PathBuf;
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum StatsSplit {
+    Weekly,
+    Daily,
+    Monthly,
+    Never,
+}
+
 #[derive(Parser)]
 #[clap(version = "1.0", author = "Your Name")]
 struct Cli {
@@ -28,6 +36,19 @@ enum Commands {
         since: String,
         #[clap(long, short, help = "End date (format: YYYY-MM-DD)")]
         until: String,
+    },
+    FileStats {
+        #[clap(long, short, help = "Start date (format: YYYY-MM-DD)")]
+        since: String,
+        #[clap(long, short, help = "End date (format: YYYY-MM-DD)")]
+        until: String,
+        #[clap(
+            long,
+            value_enum,
+            help = "Split option (weekly, daily, monthly, or never)",
+            default_value_t = StatsSplit::Never
+        )]
+        split: StatsSplit,
     },
 }
 
@@ -78,6 +99,42 @@ fn parse_date(date: &str) -> Result<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
+fn handle_file_stats_command(
+    repo: &Repository,
+    since: &str,
+    until: &str,
+    split: StatsSplit,
+) -> Result<(), anyhow::Error> {
+    let since_date = parse_date(since)?;
+    let until_date = parse_date(until)?;
+
+    let since_commit = bound::find_first_commit_on_or_after_date(repo, since_date)?
+        .ok_or_else(|| anyhow::anyhow!("No commit found on or after {}", since_date))?;
+    let until_commit = bound::find_last_commit_before_date(repo, until_date)?
+        .ok_or_else(|| anyhow::anyhow!("No commit found before {}", until_date))?;
+
+    let commits = bound::commits_between_asc(repo, &since_commit, &until_commit)?;
+
+    let date_group_fn = match split {
+        StatsSplit::Weekly => |date: DateTime<Utc>| date.format("%Y-W%W").to_string(),
+        StatsSplit::Daily => |date: DateTime<Utc>| date.format("%Y-%m-%d").to_string(),
+        StatsSplit::Monthly => |date: DateTime<Utc>| date.format("%Y-%m").to_string(),
+        StatsSplit::Never => |_: DateTime<Utc>| String::from("All"),
+    };
+
+    let file_stats = bound::collect_file_stats(repo, commits, date_group_fn)?;
+
+    println!("DateGroup\tAuthor\tFile\tInsertions\tDeletions");
+    for stat in file_stats {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            stat.date_group, stat.author, stat.path, stat.insertions, stat.deletions
+        );
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let repo = Repository::open(&cli.repo)
@@ -104,6 +161,13 @@ fn main() -> Result<()> {
         }
         Commands::Commits { since, until } => {
             handle_commits_command(&repo, since, until)?;
+        }
+        Commands::FileStats {
+            since,
+            until,
+            split,
+        } => {
+            handle_file_stats_command(&repo, since, until, split.clone())?;
         }
     }
 
