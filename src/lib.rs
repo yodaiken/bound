@@ -1,297 +1,263 @@
-use std::collections::HashMap;
-
 use chrono::{DateTime, TimeZone, Utc};
-use git2::{Commit, DiffOptions, Oid, Repository};
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+use std::process::{Command, Stdio};
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum BoundError {
-    #[error("Git error: {0}")]
-    GitError(#[from] git2::Error),
-    #[error("Invalid timestamp")]
-    InvalidTimestamp,
+    #[error("Failed to execute git command: {0}")]
+    GitExecutionError(#[from] std::io::Error),
+    #[error("Failed to parse UTF-8: {0}")]
+    UTF8Error(#[from] std::string::FromUtf8Error),
+    #[error("Expected <EMPTY LINE>, got: {0}")]
+    UnexpectedLineError(String),
+    #[error("Expected COMMIT, got: {0}")]
+    UnexpectedCommitError(String),
+    #[error("Failed to parse CODEOWNERS file: {0}")]
+    CodeownersParseError(String),
 }
 
-/// Finds the first commit in the repository that was committed on or after the given date.
-///
-/// This function traverses the commit history of the repository, starting from the HEAD,
-/// and returns the first commit it encounters that has a commit date on or after the
-/// specified date.
-///
-/// # Arguments
-///
-/// * `repo` - A reference to the git2::Repository to search in
-/// * `date` - The DateTime<Utc> to search from
-///
-/// # Returns
-///
-/// * `Ok(Some(Commit))` if a matching commit is found
-/// * `Ok(None)` if no commit on or after the given date is found
-/// * `Err(git2::Error)` if there's an error accessing the repository
-pub fn find_first_commit_on_or_after_date(
-    repo: &Repository,
-    date: DateTime<Utc>,
-) -> Result<Option<Commit>, git2::Error> {
-    let mut walk = repo.revwalk()?;
-    walk.push_head()?;
-    walk.set_sorting(git2::Sort::TIME)?;
-
-    let mut result = None;
-
-    for oid in walk {
-        let commit = repo.find_commit(oid?)?;
-        let commit_time = commit.time();
-        let commit_date =
-            DateTime::<Utc>::from_timestamp(commit_time.seconds(), 0).expect("Invalid timestamp");
-
-        if commit_date >= date {
-            result = Some(commit);
-        } else {
-            break; // We've gone past the date we're looking for
-        }
-    }
-
-    Ok(result)
+#[derive(Debug, Clone)]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
 }
 
-/// Finds the last commit in the repository that was committed before the given date.
-///
-/// This function traverses the commit history of the repository, starting from the oldest commit,
-/// and returns the newest commit it encounters that has a commit date strictly before the
-/// specified date.
-///
-/// # Arguments
-///
-/// * `repo` - A reference to the git2::Repository to search in
-/// * `date` - The DateTime<Utc> to search up to
-///
-/// # Returns
-///
-/// * `Ok(Some(Commit))` if a matching commit is found
-/// * `Ok(None)` if no commit before the given date is found
-/// * `Err(git2::Error)` if there's an error accessing the repository
-pub fn find_last_commit_before_date(
-    repo: &Repository,
-    date: DateTime<Utc>,
-) -> Result<Option<Commit>, git2::Error> {
-    let mut walk = repo.revwalk()?;
-    walk.push_head()?;
-    walk.set_sorting(git2::Sort::TIME | git2::Sort::REVERSE)?;
-
-    let mut last_commit = None;
-
-    for oid in walk {
-        let commit = repo.find_commit(oid?)?;
-        let commit_time = commit.time();
-        let commit_date =
-            DateTime::<Utc>::from_timestamp(commit_time.seconds(), 0).expect("Invalid timestamp");
-
-        if commit_date >= date {
-            return Ok(last_commit);
-        }
-
-        last_commit = Some(commit);
-    }
-
-    Ok(last_commit)
-}
-
-pub fn commits_between_asc<'repo>(
-    repo: &'repo Repository,
-    start_commit: &Commit,
-    end_commit: &Commit,
-) -> Result<impl Iterator<Item = Result<Commit<'repo>, git2::Error>> + 'repo, git2::Error> {
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push(end_commit.id())?;
-    revwalk.hide(start_commit.parent_id(0)?)?;
-    revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::REVERSE)?;
-
-    Ok(revwalk.map(move |oid_result| oid_result.and_then(|oid| repo.find_commit(oid))))
-}
-
-//////
-
-pub struct CommitInfo {
-    pub id: Oid,
-    pub author: String,
-    pub date: DateTime<Utc>,
-    pub file_changes: Vec<FileChange>,
-    pub total_files_changed: usize,
-    pub total_insertions: usize,
-    pub total_deletions: usize,
-}
-
+#[derive(Debug, Clone)]
 pub struct FileChange {
     pub path: String,
-    pub insertions: usize,
-    pub deletions: usize,
+    pub insertions: i32,
+    pub deletions: i32,
 }
 
-pub fn get_commit_info(repo: &Repository, commit: &Commit) -> Result<CommitInfo, BoundError> {
-    let (file_changes, total_stats) = get_commit_changes(repo, commit)?;
-
-    Ok(CommitInfo {
-        id: commit.id(),
-        author: commit.author().name().unwrap_or("<unknown>").to_string(),
-        date: Utc
-            .timestamp_opt(commit.time().seconds(), 0)
-            .single()
-            .ok_or(BoundError::InvalidTimestamp)?,
-        file_changes,
-        total_files_changed: total_stats.files_changed(),
-        total_insertions: total_stats.insertions(),
-        total_deletions: total_stats.deletions(),
-    })
+#[derive(Debug, Clone)]
+pub struct CommitInfo {
+    pub id: String,
+    pub author: CommitAuthor,
+    pub date: DateTime<Utc>,
+    pub file_changes: Vec<FileChange>,
 }
 
-fn get_commit_changes(
-    repo: &Repository,
-    commit: &Commit,
-) -> Result<(Vec<FileChange>, git2::DiffStats), BoundError> {
-    let parent = commit.parent(0).ok();
-    let diff = if let Some(parent) = parent {
-        repo.diff_tree_to_tree(
-            Some(&parent.tree()?),
-            Some(&commit.tree()?),
-            Some(&mut DiffOptions::new()),
-        )?
-    } else {
-        let empty_tree = repo.find_tree(repo.treebuilder(None)?.write()?)?;
-        repo.diff_tree_to_tree(
-            Some(&empty_tree),
-            Some(&commit.tree()?),
-            Some(&mut DiffOptions::new()),
-        )?
+fn git_log_lines(
+    since: &str,
+    until: &str,
+    cwd: &Path,
+) -> Result<impl Iterator<Item = Result<String, BoundError>>, BoundError> {
+    let output = Command::new("git")
+        .args(&[
+            "log",
+            "--no-merges",
+            "--format=COMMIT%n%H%n%at%n%an%n%ae",
+            "--numstat",
+            &format!("--since={}", since),
+            &format!("--until={}", until),
+        ])
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| BoundError::GitExecutionError(e))?
+        .stdout
+        .ok_or_else(|| {
+            BoundError::GitExecutionError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to capture stdout",
+            ))
+        })?;
+
+    Ok(BufReader::new(output)
+        .lines()
+        .map(|l| l.map_err(BoundError::GitExecutionError)))
+}
+
+fn next_commit_info_from_git_log_lines<I: Iterator<Item = Result<String, BoundError>>>(
+    lines: &mut I,
+) -> Result<Option<CommitInfo>, BoundError> {
+    let commit_id = match lines.next().transpose()? {
+        Some(id) => id,
+        None => return Ok(None),
     };
+    let commit_date = Utc
+        .timestamp_opt(
+            lines
+                .next()
+                .transpose()?
+                .ok_or(BoundError::UnexpectedCommitError(
+                    "Missing timestamp".to_string(),
+                ))?
+                .parse()
+                .map_err(|_| BoundError::UnexpectedCommitError("Invalid timestamp".to_string()))?,
+            0,
+        )
+        .earliest()
+        .ok_or(BoundError::UnexpectedCommitError(
+            "Invalid timestamp".to_string(),
+        ))?;
+    let current_author_name =
+        lines
+            .next()
+            .transpose()?
+            .ok_or(BoundError::UnexpectedCommitError(
+                "Missing author name".to_string(),
+            ))?;
+    let current_author_email =
+        lines
+            .next()
+            .transpose()?
+            .ok_or(BoundError::UnexpectedCommitError(
+                "Missing author email".to_string(),
+            ))?;
 
-    let mut file_stats: HashMap<String, (usize, usize)> = HashMap::new();
-
-    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
-        let file_path = delta
-            .new_file()
-            .path()
-            .or_else(|| delta.old_file().path())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| String::from("unknown"));
-
-        let (insertions, deletions) = file_stats.entry(file_path).or_insert((0, 0));
-        match line.origin() {
-            '+' => *insertions += 1,
-            '-' => *deletions += 1,
-            _ => {}
-        }
-        true
-    })?;
-
-    let file_changes = file_stats
-        .into_iter()
-        .map(|(path, (insertions, deletions))| FileChange {
-            path,
-            insertions,
-            deletions,
-        })
-        .collect();
-
-    let total_stats = diff.stats()?;
-
-    Ok((file_changes, total_stats))
-}
-
-// ----
-
-pub struct ContributorFileStats<T> {
-    pub author: String,
-    pub codeowner: String,
-    pub path: String,
-    pub insertions: usize,
-    pub deletions: usize,
-    pub date_group: T,
-}
-
-pub fn collect_file_stats<'repo, T: Clone, F>(
-    repo: &'repo Repository,
-    commits: impl Iterator<Item = Result<Commit<'repo>, git2::Error>>,
-    date_group_fn: F,
-) -> Result<Vec<ContributorFileStats<T>>, BoundError>
-where
-    F: Fn(DateTime<Utc>) -> T,
-    T: Ord + Clone,
-{
-    let mut file_stats: Vec<ContributorFileStats<T>> = Vec::new();
-
-    for commit_result in commits {
-        let commit = commit_result?;
-        let commit_info = get_commit_info(repo, &commit)?;
-        let date_group = date_group_fn(commit_info.date);
-
-        let tree = commit.tree()?;
-        let codeowners = get_codeowners(repo, &tree);
-
-        for file_change in commit_info.file_changes {
-            let codeowner = get_codeowner(&codeowners, &file_change.path);
-
-            let index = file_stats
-                .binary_search_by(|stats| {
-                    stats
-                        .date_group
-                        .cmp(&date_group)
-                        .then(stats.codeowner.cmp(&codeowner))
-                        .then(stats.author.cmp(&commit_info.author))
-                        .then(stats.path.cmp(&file_change.path))
-                })
-                .unwrap_or_else(|x| x);
-
-            if index < file_stats.len()
-                && file_stats[index].date_group == date_group
-                && file_stats[index].codeowner == codeowner
-                && file_stats[index].author == commit_info.author
-                && file_stats[index].path == file_change.path
-            {
-                file_stats[index].insertions += file_change.insertions;
-                file_stats[index].deletions += file_change.deletions;
-            } else {
-                file_stats.insert(
-                    index,
-                    ContributorFileStats {
-                        author: commit_info.author.clone(),
-                        path: file_change.path,
-                        codeowner,
-                        insertions: file_change.insertions,
-                        deletions: file_change.deletions,
-                        date_group: date_group.clone(),
-                    },
-                );
-            }
+    if let Some(line) = lines.next().transpose()? {
+        if !line.is_empty() {
+            return Err(BoundError::UnexpectedLineError(line));
         }
     }
 
-    Ok(file_stats)
-}
+    let mut file_changes = Vec::new();
 
-fn get_codeowner(codeowners: &codeowners::Owners, path: &str) -> String {
-    match codeowners.of(path) {
-        None => "<Unowned>".to_owned(),
-        Some(owners) => owners
-            .iter()
-            .map(|owner| owner.to_string())
-            .collect::<Vec<String>>()
-            .join(", "),
+    while let Some(line) = lines.next().transpose()? {
+        if line == "COMMIT" {
+            break;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() == 3 {
+            file_changes.push(FileChange {
+                path: parts[2].to_string(),
+                insertions: parts[0].parse().unwrap_or(0),
+                deletions: parts[1].parse().unwrap_or(0),
+            });
+        }
     }
+
+    Ok(Some(CommitInfo {
+        id: commit_id,
+        author: CommitAuthor {
+            name: current_author_name,
+            email: current_author_email,
+        },
+        date: commit_date,
+        file_changes,
+    }))
 }
 
-fn get_codeowners(repo: &Repository, tree: &git2::Tree) -> codeowners::Owners {
-    let potential_codeowner_paths = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
-    let codeowners_contents = potential_codeowner_paths.iter().find_map(|path| {
-        tree.get_path(std::path::Path::new(path))
-            .ok()
-            .and_then(|entry| entry.to_object(repo).ok())
-            .and_then(|object| object.into_blob().ok())
-    });
+pub fn git_log_commits(
+    since: &str,
+    until: &str,
+    cwd: &Path,
+) -> Result<impl Iterator<Item = Result<CommitInfo, BoundError>>, BoundError> {
+    let mut lines = git_log_lines(since, until, cwd)?.peekable();
 
-    if let Some(blob) = codeowners_contents {
-        codeowners::from_reader(blob.content())
+    // Skip the first COMMIT line
+    if let Some(line) = lines.next().transpose()? {
+        if line != "COMMIT" {
+            return Err(BoundError::UnexpectedCommitError(line));
+        }
+    }
+
+    Ok(std::iter::from_fn(
+        move || match next_commit_info_from_git_log_lines(&mut lines) {
+            Ok(Some(commit_info)) => Some(Ok(commit_info)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
+        },
+    ))
+}
+
+// CODEOWNERS
+
+static CODEOWNERS_LOCATIONS: [&str; 3] = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+
+fn read_file_at_commit(
+    commit_id: &str,
+    file_path: &str,
+    cwd: &Path,
+) -> Result<Option<String>, BoundError> {
+    let output = Command::new("git")
+        .args(&["show", &format!("{}:{}", commit_id, file_path)])
+        .current_dir(cwd)
+        .output()
+        .map_err(BoundError::GitExecutionError)?;
+
+    if output.status.success() {
+        let content = String::from_utf8(output.stdout).map_err(BoundError::UTF8Error)?;
+        Ok(Some(content))
     } else {
-        // prinwarn!("Warning: No CODEOWNERS file found in this commit");
-        codeowners::from_reader(&[] as &[u8])
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.starts_with("fatal: path") {
+            Ok(None)
+        } else {
+            Err(BoundError::GitExecutionError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                stderr,
+            )))
+        }
     }
+}
+
+pub fn get_codeowners_at_commit(commit_id: &str, cwd: &Path) -> Result<Option<String>, BoundError> {
+    for location in CODEOWNERS_LOCATIONS.iter() {
+        if let Some(content) = read_file_at_commit(commit_id, location, cwd)? {
+            return Ok(Some(content));
+        }
+    }
+    Ok(None)
+}
+
+#[derive(Debug, Clone)]
+pub struct CommitInfoWithCodeowner {
+    pub id: String,
+    pub author: CommitAuthor,
+    pub date: DateTime<Utc>,
+    pub file_changes: Vec<FileChangeWithCodeowner>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileChangeWithCodeowner {
+    pub path: String,
+    pub codeowners: Option<Vec<String>>,
+    pub insertions: i32,
+    pub deletions: i32,
+}
+
+pub fn git_log_commits_with_codeowners<'a>(
+    since: &str,
+    until: &str,
+    cwd: &'a Path,
+) -> Result<impl Iterator<Item = Result<CommitInfoWithCodeowner, BoundError>> + 'a, BoundError> {
+    let mut commits = git_log_commits(since, until, cwd)?;
+
+    Ok(std::iter::from_fn(move || match commits.next() {
+        Some(Ok(commit)) => {
+            let codeowners_contents = get_codeowners_at_commit(&commit.id, cwd).ok().flatten();
+            let codeowners = codeowners_contents
+                .as_ref()
+                .map(|contents| codeowners::from_reader(contents.as_bytes()));
+
+            let file_changes_with_codeowners: Vec<FileChangeWithCodeowner> = commit
+                .file_changes
+                .into_iter()
+                .map(|fc| FileChangeWithCodeowner {
+                    codeowners: codeowners
+                        .as_ref()
+                        .map(|co| co.of(&fc.path))
+                        .flatten()
+                        .map(|owners| owners.iter().map(|owner| owner.to_string()).collect()),
+                    path: fc.path,
+                    insertions: fc.insertions,
+                    deletions: fc.deletions,
+                })
+                .collect();
+
+            Some(Ok(CommitInfoWithCodeowner {
+                id: commit.id,
+                author: commit.author,
+                date: commit.date,
+                file_changes: file_changes_with_codeowners,
+            }))
+        }
+        Some(Err(e)) => Some(Err(e)),
+        None => None,
+    }))
 }
