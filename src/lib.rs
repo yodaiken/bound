@@ -217,14 +217,32 @@ pub struct CommitInfoWithCodeowner {
 pub struct FileChangeWithCodeowner {
     pub path: String,
     pub codeowners: Option<Vec<String>>,
+    pub author_is_codeowner: Option<bool>,
     pub insertions: i32,
     pub deletions: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthorCodeownerMemberships<'a> {
+    pub author_email: Option<&'a str>,
+    pub author_name: Option<&'a str>,
+    pub codeowner: &'a str,
+}
+
+impl AuthorCodeownerMemberships<'_> {
+    pub fn author_matches(&self, author: &CommitAuthor) -> bool {
+        (self.author_email.is_some()
+            && self.author_email.unwrap().to_lowercase() == author.email.to_lowercase())
+            || (self.author_name.is_some()
+                && self.author_name.unwrap().to_lowercase() == author.name.to_lowercase())
+    }
 }
 
 pub fn git_log_commits_with_codeowners<'a>(
     since: &str,
     until: &str,
     cwd: &'a Path,
+    memberships: Option<&'a Vec<AuthorCodeownerMemberships>>,
 ) -> Result<impl Iterator<Item = Result<CommitInfoWithCodeowner, BoundError>> + 'a, BoundError> {
     let mut commits = git_log_commits(since, until, cwd)?;
 
@@ -238,15 +256,30 @@ pub fn git_log_commits_with_codeowners<'a>(
             let file_changes_with_codeowners: Vec<FileChangeWithCodeowner> = commit
                 .file_changes
                 .into_iter()
-                .map(|fc| FileChangeWithCodeowner {
-                    codeowners: codeowners
+                .map(|fc| {
+                    let file_codeowners: Option<Vec<String>> = codeowners
                         .as_ref()
                         .map(|co| co.of(&fc.path))
                         .flatten()
-                        .map(|owners| owners.iter().map(|owner| owner.to_string()).collect()),
-                    path: fc.path,
-                    insertions: fc.insertions,
-                    deletions: fc.deletions,
+                        .map(|owners| owners.iter().map(|owner| owner.to_string()).collect());
+                    let author_is_codeowner = memberships.as_ref().map(|m| {
+                        file_codeowners.as_ref().map_or(false, |owners| {
+                            owners.iter().any(|owner| {
+                                m.iter().any(|membership| {
+                                    membership.author_matches(&commit.author)
+                                        && owner == membership.codeowner
+                                })
+                            })
+                        })
+                    });
+
+                    FileChangeWithCodeowner {
+                        codeowners: file_codeowners,
+                        author_is_codeowner,
+                        path: fc.path,
+                        insertions: fc.insertions,
+                        deletions: fc.deletions,
+                    }
                 })
                 .collect();
 
