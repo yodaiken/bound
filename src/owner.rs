@@ -57,6 +57,14 @@ where
     commit_iter: I,
     cwd: PathBuf,
     memberships: Option<Vec<AuthorCodeownerMemberships>>,
+    cached_owners: Option<codeowners::Owners>,
+}
+
+fn codeowners_changed(commit: &CommitInfo) -> bool {
+    commit
+        .file_changes
+        .iter()
+        .any(|change| CODEOWNERS_LOCATIONS.contains(&change.path.as_str()))
 }
 
 impl<I> Iterator for CommitWithCodeownersIterator<I>
@@ -71,10 +79,14 @@ where
             Err(e) => return Some(Err(e)),
         };
 
-        let owners = match get_owners_at_commit(&commit.id, &self.cwd) {
-            Ok(owners) => owners,
-            Err(e) => return Some(Err(e)),
-        };
+        if self.cached_owners.is_none() || codeowners_changed(&commit) {
+            match get_owners_at_commit(&commit.id, &self.cwd) {
+                Ok(owners) => self.cached_owners = Some(owners),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+
+        let owners = self.cached_owners.as_ref().unwrap();
 
         Some(Ok(CommitInfoWithCodeowner {
             id: commit.id,
@@ -153,5 +165,6 @@ pub fn git_log_commits_with_codeowners(
         commit_iter,
         memberships,
         cwd: cwd.clone(),
+        cached_owners: None,
     })
 }
