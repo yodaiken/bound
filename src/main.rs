@@ -46,7 +46,7 @@ enum Commands {
     },
 }
 
-fn parse_memberships(path: &PathBuf) -> Result<Vec<AuthorCodeownerMemberships<'static>>> {
+fn parse_memberships(path: &PathBuf) -> Result<Vec<AuthorCodeownerMemberships>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut memberships = Vec::new();
@@ -61,14 +61,14 @@ fn parse_memberships(path: &PathBuf) -> Result<Vec<AuthorCodeownerMemberships<'s
             author_email: if parts[0].is_empty() {
                 None
             } else {
-                Some(Box::leak(parts[0].to_string().into_boxed_str()))
+                Some(parts[0].to_string())
             },
             author_name: if parts[1].is_empty() {
                 None
             } else {
-                Some(Box::leak(parts[1].to_string().into_boxed_str()))
+                Some(parts[1].to_string())
             },
-            codeowner: Box::leak(parts[2].to_string().into_boxed_str()),
+            codeowner: parts[2].to_string(),
         });
     }
 
@@ -94,9 +94,9 @@ fn main() -> Result<()> {
                         println!(
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             commit.id,
-                            commit.author.name,
-                            commit.author.email,
-                            commit.date,
+                            commit.author_name,
+                            commit.author_email,
+                            commit.timestamp,
                             change.path,
                             change.insertions,
                             change.deletions
@@ -107,8 +107,8 @@ fn main() -> Result<()> {
                 for commit in commits {
                     let commit = commit?;
                     println!("Commit: {}", commit.id);
-                    println!("Author: {} <{}>", commit.author.name, commit.author.email);
-                    println!("Date: {}", commit.date);
+                    println!("Author: {} <{}>", commit.author_name, commit.author_email);
+                    println!("Date: {}", commit.timestamp);
                     println!("Changes:");
                     for change in commit.file_changes {
                         println!(
@@ -139,12 +139,8 @@ fn main() -> Result<()> {
                 .map(parse_memberships)
                 .transpose()?;
 
-            let commits = bound::git_log_commits_with_codeowners(
-                since,
-                until,
-                directory,
-                memberships.as_ref(),
-            )?;
+            let commits =
+                bound::git_log_commits_with_codeowners(since, until, directory, memberships)?;
 
             if *tsv {
                 println!("commit_id\tauthor_name\tauthor_email\tdate\tpath\tinsertions\tdeletions\tauthor_is_codeowner\tcodeowners");
@@ -154,9 +150,9 @@ fn main() -> Result<()> {
                         println!(
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             commit.id,
-                            commit.author.name,
-                            commit.author.email,
-                            commit.date,
+                            commit.author_name,
+                            commit.author_email,
+                            commit.timestamp,
                             change.path,
                             change.insertions,
                             change.deletions,
@@ -174,8 +170,8 @@ fn main() -> Result<()> {
                 for commit in commits {
                     let commit = commit?;
                     println!("Commit: {}", commit.id);
-                    println!("Author: {} <{}>", commit.author.name, commit.author.email);
-                    println!("Date: {}", commit.date);
+                    println!("Author: {} <{}>", commit.author_name, commit.author_email);
+                    println!("Date: {}", commit.timestamp);
                     println!("Changes:");
                     for change in commit.file_changes {
                         println!(

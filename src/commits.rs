@@ -31,16 +31,18 @@ pub struct CommitInfo {
 
 pub struct GitLogLinesIterator {
     reader: BufReader<std::process::ChildStdout>,
+    line_no: usize,
 }
 
 impl Iterator for GitLogLinesIterator {
-    type Item = Result<String, BoundError>;
+    type Item = Result<(String, usize), BoundError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut line = String::new();
+        self.line_no += 1;
         match self.reader.read_line(&mut line) {
             Ok(0) => None,
-            Ok(_) => Some(Ok(line.trim_end().to_string())),
+            Ok(_) => Some(Ok((line.trim_end().to_string(), self.line_no))),
             Err(e) => Some(Err(BoundError::GitExecutionError(e))),
         }
     }
@@ -70,6 +72,7 @@ fn git_log_lines(since: &str, until: &str, cwd: &Path) -> Result<GitLogLinesIter
 
     Ok(GitLogLinesIterator {
         reader: BufReader::new(output),
+        line_no: 0,
     })
 }
 

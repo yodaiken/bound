@@ -2,7 +2,7 @@ use std::{path::Path, process::Command};
 
 use chrono::{DateTime, Utc};
 
-use crate::{git_log_commits, BoundError, CommitAuthor, CommitInfo};
+use crate::{git_log_commits, BoundError, CommitInfo, FileChange};
 
 const CODEOWNERS_LOCATIONS: [&str; 3] = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
 
@@ -80,61 +80,78 @@ pub struct CommitsWithCodeownersIterator<'a, I> {
     cwd: &'a Path,
     memberships: Option<&'a Vec<AuthorCodeownerMemberships<'a>>>,
 }
+fn process_commit<'a, I>(
+    iter: &CommitsWithCodeownersIterator<'a, I>,
+    commit: CommitInfo,
+) -> Result<CommitInfoWithCodeowner, BoundError> {
+    let codeowners = get_codeowners_at_commit(&commit.id, iter.cwd)?
+        .map(|contents| codeowners::from_reader(contents.as_bytes()));
 
+    let file_changes_with_codeowners: Vec<_> = commit
+        .file_changes
+        .into_iter()
+        .map(|fc| process_file_change(&fc, &codeowners, &commit.author, iter.memberships))
+        .collect();
+
+    Ok(CommitInfoWithCodeowner {
+        id: commit.id,
+        author: commit.author,
+        date: commit.date,
+        file_changes: file_changes_with_codeowners,
+    })
+}
+
+fn process_file_change(
+    fc: &FileChange,
+    codeowners: &Option<codeowners::Owners>,
+    author: &CommitAuthor,
+    memberships: Option<&Vec<AuthorCodeownerMemberships>>,
+) -> FileChangeWithCodeowner {
+    let file_codeowners = codeowners
+        .as_ref()
+        .and_then(|co| co.of(&fc.path))
+        .map(|owners| {
+            owners
+                .iter()
+                .map(|owner| owner.to_string())
+                .collect::<Vec<String>>()
+        });
+
+    let author_is_codeowner = memberships.map(|m| {
+        file_codeowners
+            .as_ref()
+            .map_or(false, |owners| is_author_codeowner(m, owners, author))
+    });
+
+    FileChangeWithCodeowner {
+        codeowners: file_codeowners,
+        author_is_codeowner,
+        path: fc.path.clone(),
+        insertions: fc.insertions,
+        deletions: fc.deletions,
+    }
+}
+
+fn is_author_codeowner(
+    memberships: &[AuthorCodeownerMemberships],
+    owners: &[String],
+    author: &CommitAuthor,
+) -> bool {
+    owners.iter().any(|owner| {
+        memberships
+            .iter()
+            .any(|membership| membership.author_matches(author) && owner == membership.codeowner)
+    })
+}
 impl<'a, I: Iterator<Item = Result<CommitInfo, BoundError>>> Iterator
     for CommitsWithCodeownersIterator<'a, I>
 {
     type Item = Result<CommitInfoWithCodeowner, BoundError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.commits.next() {
-            Some(Ok(commit)) => {
-                let codeowners_contents = get_codeowners_at_commit(&commit.id, self.cwd)
-                    .ok()
-                    .flatten();
-                let codeowners = codeowners_contents
-                    .as_ref()
-                    .map(|contents| codeowners::from_reader(contents.as_bytes()));
-
-                let file_changes_with_codeowners: Vec<FileChangeWithCodeowner> = commit
-                    .file_changes
-                    .into_iter()
-                    .map(|fc| {
-                        let file_codeowners: Option<Vec<String>> = codeowners
-                            .as_ref()
-                            .and_then(|co| co.of(&fc.path))
-                            .map(|owners| owners.iter().map(|owner| owner.to_string()).collect());
-                        let author_is_codeowner = self.memberships.as_ref().map(|m| {
-                            file_codeowners.as_ref().map_or(false, |owners| {
-                                owners.iter().any(|owner| {
-                                    m.iter().any(|membership| {
-                                        membership.author_matches(&commit.author)
-                                            && owner == membership.codeowner
-                                    })
-                                })
-                            })
-                        });
-
-                        FileChangeWithCodeowner {
-                            codeowners: file_codeowners,
-                            author_is_codeowner,
-                            path: fc.path,
-                            insertions: fc.insertions,
-                            deletions: fc.deletions,
-                        }
-                    })
-                    .collect();
-
-                Some(Ok(CommitInfoWithCodeowner {
-                    id: commit.id,
-                    author: commit.author,
-                    date: commit.date,
-                    file_changes: file_changes_with_codeowners,
-                }))
-            }
-            Some(Err(e)) => Some(Err(e)),
-            None => None,
-        }
+        self.commits
+            .next()
+            .map(|result| result.and_then(|commit| process_commit(self, commit)))
     }
 }
 
