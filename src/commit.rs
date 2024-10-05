@@ -27,7 +27,7 @@ impl<R: Read> Iterator for LineReader<R> {
             Ok(_) => {
                 // println!("Debug: {}", line);
                 Some(Ok(line.trim_end().to_string()))
-            },
+            }
             Err(e) => Some(Err(e)),
         }
     }
@@ -95,21 +95,15 @@ impl<R: Read> Iterator for CommitIterator<R> {
             }
         }
 
-        // Expect an empty line or EOF, skip it if it's there
-        match self.lines.next() {
-            Some(Ok(line)) if line.trim().is_empty() => {},
-            Some(Ok(line)) => return Some(Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Expected empty line, got: '{}'", line),
-            ))),
-            Some(Err(e)) => return Some(Err(e)),
-            None => {},
-        }
-
         // Parse file changes
         while let Some(Ok(line)) = self.lines.peek() {
             if line == "COMMIT" {
                 break;
+            }
+            if line.is_empty() {
+                // Skip empty lines, typically just at the start
+                self.lines.next();
+                continue;
             }
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() == 3 {
