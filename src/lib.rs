@@ -46,7 +46,7 @@ fn git_log_lines(
     cwd: &Path,
 ) -> Result<impl Iterator<Item = Result<String, BoundError>>, BoundError> {
     let output = Command::new("git")
-        .args(&[
+        .args([
             "log",
             "--no-merges",
             "--format=COMMIT%n%H%n%at%n%an%n%ae",
@@ -57,7 +57,7 @@ fn git_log_lines(
         .current_dir(cwd)
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|e| BoundError::GitExecutionError(e))?
+        .map_err(BoundError::GitExecutionError)?
         .stdout
         .ok_or_else(|| {
             BoundError::GitExecutionError(std::io::Error::new(
@@ -167,7 +167,7 @@ pub fn git_log_commits(
 
 // CODEOWNERS
 
-static CODEOWNERS_LOCATIONS: [&str; 3] = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+const CODEOWNERS_LOCATIONS: [&str; 3] = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
 
 fn read_file_at_commit(
     commit_id: &str,
@@ -175,7 +175,7 @@ fn read_file_at_commit(
     cwd: &Path,
 ) -> Result<Option<String>, BoundError> {
     let output = Command::new("git")
-        .args(&["show", &format!("{}:{}", commit_id, file_path)])
+        .args(["show", &format!("{}:{}", commit_id, file_path)])
         .current_dir(cwd)
         .output()
         .map_err(BoundError::GitExecutionError)?;
@@ -259,8 +259,7 @@ pub fn git_log_commits_with_codeowners<'a>(
                 .map(|fc| {
                     let file_codeowners: Option<Vec<String>> = codeowners
                         .as_ref()
-                        .map(|co| co.of(&fc.path))
-                        .flatten()
+                        .and_then(|co| co.of(&fc.path))
                         .map(|owners| owners.iter().map(|owner| owner.to_string()).collect());
                     let author_is_codeowner = memberships.as_ref().map(|m| {
                         file_codeowners.as_ref().map_or(false, |owners| {
