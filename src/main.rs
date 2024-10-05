@@ -23,6 +23,8 @@ enum Commands {
         until: String,
         #[arg(short, long, default_value = ".")]
         directory: PathBuf,
+        #[arg(long)]
+        tsv: bool,
     },
     GetCodeowners {
         #[arg(short, long)]
@@ -39,6 +41,8 @@ enum Commands {
         directory: PathBuf,
         #[arg(short, long)]
         memberships: Option<PathBuf>,
+        #[arg(long)]
+        tsv: bool,
     },
 }
 
@@ -79,21 +83,41 @@ fn main() -> Result<()> {
             since,
             until,
             directory,
+            tsv,
         } => {
             let commits = git_log_commits(since, until, directory)?;
-            for commit in commits {
-                let commit = commit?;
-                println!("Commit: {}", commit.id);
-                println!("Author: {} <{}>", commit.author.name, commit.author.email);
-                println!("Date: {}", commit.date);
-                println!("Changes:");
-                for change in commit.file_changes {
-                    println!(
-                        "  {}: +{} -{}",
-                        change.path, change.insertions, change.deletions
-                    );
+            if *tsv {
+                println!("commit_id\tauthor_name\tauthor_email\tdate\tpath\tinsertions\tdeletions");
+                for commit in commits {
+                    let commit = commit?;
+                    for change in commit.file_changes {
+                        println!(
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            commit.id,
+                            commit.author.name,
+                            commit.author.email,
+                            commit.date,
+                            change.path,
+                            change.insertions,
+                            change.deletions
+                        );
+                    }
                 }
-                println!();
+            } else {
+                for commit in commits {
+                    let commit = commit?;
+                    println!("Commit: {}", commit.id);
+                    println!("Author: {} <{}>", commit.author.name, commit.author.email);
+                    println!("Date: {}", commit.date);
+                    println!("Changes:");
+                    for change in commit.file_changes {
+                        println!(
+                            "  {}: +{} -{}",
+                            change.path, change.insertions, change.deletions
+                        );
+                    }
+                    println!();
+                }
             }
         }
         Commands::GetCodeowners { commit, directory } => {
@@ -108,6 +132,7 @@ fn main() -> Result<()> {
             until,
             directory,
             memberships: memberships_path,
+            tsv,
         } => {
             let memberships = memberships_path
                 .as_ref()
@@ -120,28 +145,55 @@ fn main() -> Result<()> {
                 directory,
                 memberships.as_ref(),
             )?;
-            for commit in commits {
-                let commit = commit?;
-                println!("Commit: {}", commit.id);
-                println!("Author: {} <{}>", commit.author.name, commit.author.email);
-                println!("Date: {}", commit.date);
-                println!("Changes:");
-                for change in commit.file_changes {
-                    println!(
-                        "  {}: +{} -{} (Codeowners: {} {})",
-                        change.path,
-                        change.insertions,
-                        change.deletions,
-                        change
-                            .author_is_codeowner
-                            .map_or("-", |b| if b { "Y" } else { "N" }),
-                        change
-                            .codeowners
-                            .as_ref()
-                            .map_or_else(|| "None".to_string(), |owners| owners.join(", "))
-                    );
+
+            if *tsv {
+                println!("commit_id\tauthor_name\tauthor_email\tdate\tpath\tinsertions\tdeletions\tauthor_is_codeowner\tcodeowners");
+                for commit in commits {
+                    let commit = commit?;
+                    for change in commit.file_changes {
+                        println!(
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            commit.id,
+                            commit.author.name,
+                            commit.author.email,
+                            commit.date,
+                            change.path,
+                            change.insertions,
+                            change.deletions,
+                            change
+                                .author_is_codeowner
+                                .map_or("-", |b| if b { "Y" } else { "N" }),
+                            change
+                                .codeowners
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), |owners| owners.join(", "))
+                        );
+                    }
                 }
-                println!();
+            } else {
+                for commit in commits {
+                    let commit = commit?;
+                    println!("Commit: {}", commit.id);
+                    println!("Author: {} <{}>", commit.author.name, commit.author.email);
+                    println!("Date: {}", commit.date);
+                    println!("Changes:");
+                    for change in commit.file_changes {
+                        println!(
+                            "  {}: +{} -{} (Codeowners: {} {})",
+                            change.path,
+                            change.insertions,
+                            change.deletions,
+                            change
+                                .author_is_codeowner
+                                .map_or("-", |b| if b { "Y" } else { "N" }),
+                            change
+                                .codeowners
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), |owners| owners.join(", "))
+                        );
+                    }
+                    println!();
+                }
             }
         }
     }
