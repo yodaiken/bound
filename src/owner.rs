@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     io::{self, Cursor},
     path::PathBuf,
 };
@@ -41,12 +42,51 @@ pub struct AuthorCodeownerMemberships {
     pub codeowner: String,
 }
 
-impl AuthorCodeownerMemberships {
-    pub fn author_matches(&self, author_name: &str, author_email: &str) -> bool {
-        (self.author_email.is_some()
-            && self.author_email.as_ref().unwrap().to_lowercase() == author_email.to_lowercase())
-            || (self.author_name.is_some()
-                && self.author_name.as_ref().unwrap().to_lowercase() == author_name.to_lowercase())
+struct AuthorMembership {
+    email_to_codeowner: HashMap<String, HashSet<String>>,
+    name_to_codeowner: HashMap<String, HashSet<String>>,
+}
+
+impl AuthorMembership {
+    fn new(memberships: &[AuthorCodeownerMemberships]) -> Self {
+        let mut email_to_codeowner = HashMap::new();
+        let mut name_to_codeowner = HashMap::new();
+
+        for membership in memberships {
+            if let Some(email) = &membership.author_email {
+                email_to_codeowner
+                    .entry(email.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(membership.codeowner.clone());
+            }
+            if let Some(name) = &membership.author_name {
+                name_to_codeowner
+                    .entry(name.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(membership.codeowner.clone());
+            }
+        }
+
+        Self {
+            email_to_codeowner,
+            name_to_codeowner,
+        }
+    }
+
+    fn get_codeowners_for_author(&self, author_name: &str, author_email: &str) -> HashSet<String> {
+        let mut codeowners = HashSet::new();
+        if let Some(email_codeowners) = self.email_to_codeowner.get(author_email) {
+            codeowners.extend(email_codeowners.iter().cloned());
+        }
+        if let Some(name_codeowners) = self.name_to_codeowner.get(author_name) {
+            codeowners.extend(name_codeowners.iter().cloned());
+        }
+        codeowners
+    }
+
+    fn is_codeowner(&self, author_name: &str, author_email: &str, codeowner: &str) -> bool {
+        self.get_codeowners_for_author(author_name, author_email)
+            .contains(codeowner)
     }
 }
 
@@ -56,7 +96,7 @@ where
 {
     commit_iter: I,
     cwd: PathBuf,
-    memberships: Option<Vec<AuthorCodeownerMemberships>>,
+    memberships: Option<AuthorMembership>,
     cached_owners: Option<codeowners::Owners>,
 }
 
@@ -104,7 +144,6 @@ where
                             .collect::<Vec<String>>()
                     });
 
-                    let memberships = self.memberships.as_ref();
                     let author_name = &commit.author_name;
                     let author_email = &commit.author_email;
 
@@ -112,7 +151,7 @@ where
                         insertions: change.insertions,
                         deletions: change.deletions,
                         codeowners: file_owners.clone(),
-                        author_is_codeowner: memberships.map(|memberships| {
+                        author_is_codeowner: self.memberships.as_ref().map(|memberships| {
                             is_author_codeowner(
                                 memberships,
                                 &file_owners.clone().unwrap_or_default(),
@@ -140,17 +179,14 @@ fn get_owners_at_commit(commit_id: &str, cwd: &PathBuf) -> Result<codeowners::Ow
 }
 
 fn is_author_codeowner(
-    memberships: &[AuthorCodeownerMemberships],
+    memberships: &AuthorMembership,
     owners: &[String],
     commit_author_name: &str,
     commit_author_email: &str,
 ) -> bool {
-    owners.iter().any(|owner| {
-        memberships
-            .iter()
-            .filter(|membership| &membership.codeowner == owner)
-            .any(|membership| membership.author_matches(commit_author_name, commit_author_email))
-    })
+    owners
+        .iter()
+        .any(|owner| memberships.is_codeowner(commit_author_name, commit_author_email, owner))
 }
 
 pub fn git_log_commits_with_codeowners(
@@ -161,10 +197,70 @@ pub fn git_log_commits_with_codeowners(
 ) -> Result<impl Iterator<Item = Result<CommitInfoWithCodeowner, io::Error>>, io::Error> {
     let commit_iter = crate::git_log_commits(since, until, cwd)?;
 
+    let author_membership = memberships.map(|m| AuthorMembership::new(&m));
+
     Ok(CommitWithCodeownersIterator {
         commit_iter,
-        memberships,
+        memberships: author_membership,
         cwd: cwd.clone(),
         cached_owners: None,
     })
+}
+
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+
+pub fn write_memberships_to_tsv(
+    memberships: &[AuthorCodeownerMemberships],
+    path: &PathBuf,
+) -> io::Result<()> {
+    let mut file = File::create(path)?;
+    writeln!(file, "author_email\tauthor_name\tcodeowner")?;
+    for membership in memberships {
+        writeln!(
+            file,
+            "{}\t{}\t{}",
+            membership.author_email.as_deref().unwrap_or(""),
+            membership.author_name.as_deref().unwrap_or(""),
+            membership.codeowner
+        )?;
+    }
+    Ok(())
+}
+
+pub fn read_memberships_from_tsv(path: &PathBuf) -> io::Result<Vec<AuthorCodeownerMemberships>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut memberships = Vec::new();
+
+    let mut lines = reader.lines();
+
+    // Skip the first line
+    lines.next();
+
+    for line in lines {
+        let line = line?;
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() != 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid line: {}", line),
+            ));
+        }
+        memberships.push(AuthorCodeownerMemberships {
+            author_email: if parts[0].is_empty() {
+                None
+            } else {
+                Some(parts[0].to_string())
+            },
+            author_name: if parts[1].is_empty() {
+                None
+            } else {
+                Some(parts[1].to_string())
+            },
+            codeowner: parts[2].to_string(),
+        });
+    }
+
+    Ok(memberships)
 }

@@ -1,12 +1,8 @@
 use anyhow::Result;
 
-use bound::{git_log_commits, AuthorCodeownerMemberships};
+use bound::{git_log_commits, read_memberships_from_tsv};
 use clap::{Parser, Subcommand};
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -16,6 +12,31 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    GhGetOrgLogins,
+    GhGetToken,
+
+    GhGetTeamSlugs {
+        org: String,
+    },
+
+    GhGetTeamMembers {
+        #[arg(short, long)]
+        org: String,
+        #[arg(short, long)]
+        team: String,
+    },
+
+    GhGetUserNameEmail {
+        logins: Vec<String>,
+    },
+
+    GhGenerateOwnersFile {
+        org: String,
+
+        #[arg(short, long, default_value = "codeowners.tsv")]
+        output: PathBuf,
+    },
+
     PrintCommits {
         #[arg(short, long)]
         since: String,
@@ -46,39 +67,64 @@ enum Commands {
     },
 }
 
-fn parse_memberships(path: &PathBuf) -> Result<Vec<AuthorCodeownerMemberships>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut memberships = Vec::new();
+use bound::GithubApi;
+use tokio;
 
-    for line in reader.lines() {
-        let line = line?;
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() != 3 {
-            return Err(anyhow::anyhow!("Invalid format in memberships file"));
-        }
-        memberships.push(AuthorCodeownerMemberships {
-            author_email: if parts[0].is_empty() {
-                None
-            } else {
-                Some(parts[0].to_string())
-            },
-            author_name: if parts[1].is_empty() {
-                None
-            } else {
-                Some(parts[1].to_string())
-            },
-            codeowner: parts[2].to_string(),
-        });
-    }
-
-    Ok(memberships)
-}
-
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
+        Commands::GhGetOrgLogins => {
+            let api = GithubApi::new()?;
+            let orgs = bound::get_github_org_logins(&api).await?;
+            for org in orgs {
+                println!("{}", org);
+            }
+        }
+        Commands::GhGetToken => {
+            let token = bound::get_token()?;
+            println!("Token: {}", token);
+        }
+
+        Commands::GhGetTeamSlugs { org } => {
+            let api = GithubApi::new()?;
+            let slugs = bound::get_github_team_slugs(&api, org).await?;
+            for slug in slugs {
+                println!("{}", slug);
+            }
+        }
+
+        Commands::GhGetTeamMembers { org, team } => {
+            let api = GithubApi::new()?;
+            let members = bound::get_github_team_members(&api, org, team).await?;
+            for member in members {
+                println!("{}", member);
+            }
+        }
+
+        Commands::GhGenerateOwnersFile { org, output } => {
+            let api = GithubApi::new()?;
+            let memberships = bound::get_all_org_members(&api, org).await?;
+            bound::write_memberships_to_tsv(&memberships, output)?;
+        }
+
+        Commands::GhGetUserNameEmail { logins } => {
+            let api = GithubApi::new()?;
+            for login in logins {
+                match bound::get_user_info(&api, &login).await? {
+                    Some((name, email)) => {
+                        if email.is_empty() {
+                            println!("{} <not found>", name);
+                        } else {
+                            println!("{} <{}>", name, email);
+                        }
+                    }
+                    None => println!("{} <not found>", login),
+                }
+            }
+        }
+
         Commands::PrintCommits {
             since,
             until,
@@ -136,7 +182,7 @@ fn main() -> Result<()> {
         } => {
             let memberships = memberships_path
                 .as_ref()
-                .map(parse_memberships)
+                .map(read_memberships_from_tsv)
                 .transpose()?;
 
             let commits =
@@ -156,13 +202,15 @@ fn main() -> Result<()> {
                             change.path,
                             change.insertions,
                             change.deletions,
-                            change
-                                .author_is_codeowner
-                                .map_or("-", |b| if b { "Y" } else { "N" }),
+                            change.author_is_codeowner.map_or("", |b| if b {
+                                "true"
+                            } else {
+                                "false"
+                            }),
                             change
                                 .codeowners
                                 .as_ref()
-                                .map_or_else(|| "None".to_string(), |owners| owners.join(", "))
+                                .map_or_else(|| "".to_string(), |owners| owners.join(", "))
                         );
                     }
                 }
