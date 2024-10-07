@@ -1,8 +1,56 @@
 use anyhow::Result;
 
-use bound::{git_log_commits, read_memberships_from_tsv};
+use bound::{
+    get_github_team_members, get_github_team_slugs, get_user_info, git_log_commits,
+    read_memberships_from_tsv, AuthorCodeownerMemberships, GHCliError,
+};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+use indicatif::{ProgressBar, ProgressStyle};
+
+async fn get_all_org_members(
+    api: &GithubApi,
+    org: &str,
+) -> Result<Vec<AuthorCodeownerMemberships>> {
+    let teams = get_github_team_slugs(api, org).await?;
+    let mut all_members = Vec::new();
+
+    let teams_progress = ProgressBar::new(teams.len() as u64);
+    teams_progress.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} teams")
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("##-"),
+    );
+
+    for team in teams {
+        let members = get_github_team_members(api, org, &team).await?;
+        let members_progress = ProgressBar::new(members.len() as u64);
+        members_progress.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} members")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("##-"),
+        );
+
+        for member in members {
+            if let Some((name, email)) = get_user_info(api, &member).await? {
+                all_members.push(AuthorCodeownerMemberships {
+                    author_email: Some(email),
+                    author_name: Some(name),
+                    codeowner: format!("@{}/{}", org, team),
+                });
+            }
+            members_progress.inc(1);
+        }
+        members_progress.finish_with_message("Team processed");
+        teams_progress.inc(1);
+    }
+    teams_progress.finish_with_message("All teams processed");
+
+    Ok(all_members)
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -105,7 +153,7 @@ async fn main() -> Result<()> {
 
         Commands::GhGenerateOwnersFile { org, output } => {
             let api = GithubApi::new()?;
-            let memberships = bound::get_all_org_members(&api, org).await?;
+            let memberships = get_all_org_members(&api, org).await?;
             bound::write_memberships_to_tsv(&memberships, output)?;
         }
 

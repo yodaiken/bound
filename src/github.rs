@@ -2,8 +2,6 @@ use std::io;
 
 use thiserror::Error;
 
-use crate::AuthorCodeownerMemberships;
-
 #[derive(Error, Debug)]
 pub enum GHCliError {
     #[error("IO error: {0}")]
@@ -195,29 +193,6 @@ pub async fn get_github_team_members(
         })
         .collect::<Vec<String>>();
     Ok(usernames)
-}
-
-pub async fn get_all_org_members(
-    api: &GithubApi,
-    org: &str,
-) -> Result<Vec<AuthorCodeownerMemberships>, GHCliError> {
-    let teams = get_github_team_slugs(api, org).await?;
-    let mut all_members = Vec::new();
-
-    for team in teams {
-        let members = get_github_team_members(api, org, &team).await?;
-        for member in members {
-            if let Some((name, email)) = get_user_info(api, &member).await? {
-                all_members.push(AuthorCodeownerMemberships {
-                    author_email: Some(email),
-                    author_name: Some(name),
-                    codeowner: format!("@{}/{}", org, team),
-                });
-            }
-        }
-    }
-
-    Ok(all_members)
 }
 
 pub async fn get_user_info(
