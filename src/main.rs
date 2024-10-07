@@ -2,10 +2,10 @@ use anyhow::Result;
 
 use bound::{
     get_github_team_members, get_github_team_slugs, get_user_info, git_log_commits,
-    read_memberships_from_tsv, AuthorCodeownerMemberships, GHCliError,
+    read_memberships_from_tsv, AuthorCodeownerMemberships,
 };
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -14,42 +14,46 @@ async fn get_all_org_members(
     org: &str,
 ) -> Result<Vec<AuthorCodeownerMemberships>> {
     let teams = get_github_team_slugs(api, org).await?;
+
     let mut all_members = Vec::new();
-
-    let teams_progress = ProgressBar::new(teams.len() as u64);
-    teams_progress.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} teams")
-            .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("##-"),
-    );
-
+    let mut team_members = HashMap::new();
+    let progress = ProgressBar::new(teams.len() as u64);
+    let pb_style = ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} teams")
+        .unwrap_or_else(|_| ProgressStyle::default_bar());
+    progress.set_style(pb_style);
     for team in teams {
         let members = get_github_team_members(api, org, &team).await?;
-        let members_progress = ProgressBar::new(members.len() as u64);
-        members_progress.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} members")
-                .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("##-"),
-        );
+        all_members.extend(members.iter().cloned());
+        team_members.insert(team, members);
+        progress.inc(1);
+    }
+    progress.finish_with_message("All teams processed");
 
+    let total_members = all_members.len();
+    let member_progress = ProgressBar::new(total_members as u64);
+    let member_style = ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} members")
+        .unwrap_or_else(|_| ProgressStyle::default_bar());
+    member_progress.set_style(member_style);
+
+    let mut acms = Vec::new();
+    for (team, members) in team_members {
         for member in members {
             if let Some((name, email)) = get_user_info(api, &member).await? {
-                all_members.push(AuthorCodeownerMemberships {
+                acms.push(AuthorCodeownerMemberships {
                     author_email: Some(email),
                     author_name: Some(name),
                     codeowner: format!("@{}/{}", org, team),
                 });
             }
-            members_progress.inc(1);
+            member_progress.inc(1);
         }
-        members_progress.finish_with_message("Team processed");
-        teams_progress.inc(1);
     }
-    teams_progress.finish_with_message("All teams processed");
 
-    Ok(all_members)
+    member_progress.finish_with_message("All members processed");
+
+    Ok(acms)
 }
 
 #[derive(Parser)]
