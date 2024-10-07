@@ -5,9 +5,77 @@ use bound::{
     read_memberships_from_tsv, AuthorCodeownerMemberships,
 };
 use clap::{Parser, Subcommand};
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, io::Write, path::PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
+
+use std::collections::HashSet;
+
+pub fn create_author_codeowner_map(
+    memberships: Vec<AuthorCodeownerMemberships>,
+) -> HashMap<(String, String), HashSet<String>> {
+    let mut map = HashMap::new();
+
+    for membership in memberships {
+        let key = (
+            membership.author_name.unwrap_or_default(),
+            membership.author_email.unwrap_or_default(),
+        );
+        map.entry(key)
+            .or_insert_with(HashSet::new)
+            .insert(membership.codeowner);
+    }
+
+    map
+}
+
+fn create_teams(
+    memberships: Vec<AuthorCodeownerMemberships>,
+) -> Result<HashMap<(String, String), String>> {
+    let m = create_author_codeowner_map(memberships);
+
+    let mut res = HashMap::new();
+
+    for (key, value) in m {
+        let team = if value.len() == 1 {
+            value.iter().next().unwrap().clone()
+        } else {
+            println!("What team does {} <>{} belong to?", key.0, key.1);
+            for (index, codeowner) in value.iter().enumerate() {
+                println!("{}. {}", index + 1, codeowner);
+            }
+            print!("Enter your choice (1-{}): ", value.len());
+            std::io::stdout().flush()?;
+            let mut choice = String::new();
+            std::io::stdin().read_line(&mut choice)?;
+            let choice: usize = choice.trim().parse()?;
+            if choice > 0 && choice <= value.len() {
+                value.iter().nth(choice - 1).unwrap().clone()
+            } else {
+                return Err(anyhow::anyhow!("Invalid choice"));
+            }
+        };
+
+        res.insert(key, team);
+    }
+
+    return Ok(res);
+}
+
+fn write_teams_to_tsv(teams: &HashMap<(String, String), String>, output: &PathBuf) -> Result<()> {
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(b'\t')
+        .from_path(output)?;
+
+    writer.write_record(&["author_name", "author_email", "team"])?;
+
+    for ((name, email), team) in teams {
+        writer.write_record(&[name, email, team])?;
+    }
+
+    writer.flush()?;
+    Ok(())
+}
 
 async fn get_all_org_members(
     api: &GithubApi,
@@ -15,7 +83,7 @@ async fn get_all_org_members(
 ) -> Result<Vec<AuthorCodeownerMemberships>> {
     let teams = get_github_team_slugs(api, org).await?;
 
-    let mut all_members = Vec::new();
+    let mut all_members = HashSet::new();
     let mut team_members = HashMap::new();
     let progress = ProgressBar::new(teams.len() as u64);
     let pb_style = ProgressStyle::default_bar()
@@ -37,16 +105,26 @@ async fn get_all_org_members(
         .unwrap_or_else(|_| ProgressStyle::default_bar());
     member_progress.set_style(member_style);
 
+    let mut user_cache: HashMap<String, (String, String)> = HashMap::new();
     let mut acms = Vec::new();
     for (team, members) in team_members {
         for member in members {
-            if let Some((name, email)) = get_user_info(api, &member).await? {
-                acms.push(AuthorCodeownerMemberships {
-                    author_email: Some(email),
-                    author_name: Some(name),
-                    codeowner: format!("@{}/{}", org, team),
-                });
-            }
+            let (name, email) = if let Some(info) = user_cache.get(&member) {
+                info.clone()
+            } else {
+                if let Some(info) = get_user_info(api, &member).await? {
+                    user_cache.insert(member.clone(), info.clone());
+                    info
+                } else {
+                    member_progress.inc(1);
+                    continue;
+                }
+            };
+            acms.push(AuthorCodeownerMemberships {
+                author_email: Some(email),
+                author_name: Some(name),
+                codeowner: format!("@{}/{}", org, team),
+            });
             member_progress.inc(1);
         }
     }
@@ -117,9 +195,16 @@ enum Commands {
         #[arg(long)]
         tsv: bool,
     },
+    CreateTeams {
+        #[arg(short, long, default_value = "codeowners.tsv")]
+        input: PathBuf,
+        #[arg(short, long, default_value = "teams.tsv")]
+        output: PathBuf,
+    },
 }
 
 use bound::GithubApi;
+
 use tokio;
 
 #[tokio::main]
@@ -225,6 +310,14 @@ async fn main() -> Result<()> {
                 None => eprintln!("No CODEOWNERS file found at this commit."),
             }
         }
+
+        Commands::CreateTeams { input, output } => {
+            let memberships = read_memberships_from_tsv(&input)?;
+            let teams = create_teams(memberships)?;
+            write_teams_to_tsv(&teams, &output)?;
+            println!("Teams created and written to {}", output.display());
+        }
+
         Commands::PrintCommitsWithCodeowners {
             since,
             until,
