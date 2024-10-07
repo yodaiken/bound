@@ -211,7 +211,7 @@ pub async fn get_all_org_members(
                 all_members.push(AuthorCodeownerMemberships {
                     author_email: Some(email),
                     author_name: Some(name),
-                    codeowner: member,
+                    codeowner: format!("@{}/{}", org, team),
                 });
             }
         }

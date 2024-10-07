@@ -55,15 +55,15 @@ impl AuthorMembership {
         for membership in memberships {
             if let Some(email) = &membership.author_email {
                 email_to_codeowner
-                    .entry(email.clone())
+                    .entry(email.to_lowercase())
                     .or_insert_with(HashSet::new)
-                    .insert(membership.codeowner.clone());
+                    .insert(membership.codeowner.to_lowercase());
             }
             if let Some(name) = &membership.author_name {
                 name_to_codeowner
-                    .entry(name.clone())
+                    .entry(name.to_lowercase())
                     .or_insert_with(HashSet::new)
-                    .insert(membership.codeowner.clone());
+                    .insert(membership.codeowner.to_lowercase());
             }
         }
 
@@ -75,10 +75,10 @@ impl AuthorMembership {
 
     fn get_codeowners_for_author(&self, author_name: &str, author_email: &str) -> HashSet<String> {
         let mut codeowners = HashSet::new();
-        if let Some(email_codeowners) = self.email_to_codeowner.get(author_email) {
+        if let Some(email_codeowners) = self.email_to_codeowner.get(&author_email.to_lowercase()) {
             codeowners.extend(email_codeowners.iter().cloned());
         }
-        if let Some(name_codeowners) = self.name_to_codeowner.get(author_name) {
+        if let Some(name_codeowners) = self.name_to_codeowner.get(&author_name.to_lowercase()) {
             codeowners.extend(name_codeowners.iter().cloned());
         }
         codeowners
@@ -86,7 +86,7 @@ impl AuthorMembership {
 
     fn is_codeowner(&self, author_name: &str, author_email: &str, codeowner: &str) -> bool {
         self.get_codeowners_for_author(author_name, author_email)
-            .contains(codeowner)
+            .contains(&codeowner.to_lowercase())
     }
 }
 
