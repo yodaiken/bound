@@ -40,7 +40,7 @@ fn create_teams(
         let team = if value.len() == 1 {
             value.iter().next().unwrap().clone()
         } else {
-            println!("What team does {} <>{} belong to?", key.0, key.1);
+            println!("What team does {} <{}> belong to?", key.0, key.1);
             for (index, codeowner) in value.iter().enumerate() {
                 println!("{}. {}", index + 1, codeowner);
             }
