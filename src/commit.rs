@@ -178,6 +178,23 @@ pub fn git_log_commits(
     .map(parse_commit)
 }
 
+pub fn git_file_versions<'a>(
+    file_path: &'a str,
+    cwd: &'a PathBuf,
+) -> Result<impl Iterator<Item = Result<String, io::Error>> + 'a, io::Error> {
+    let commits = execute_git(["log", "--format=%H", "--", file_path], cwd)?;
+
+    Ok(commits.map(move |commit_result| {
+        commit_result.and_then(|commit_id| {
+            read_file_at_commit(&commit_id, file_path, cwd).and_then(|content_option| {
+                content_option.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "File not found in commit")
+                })
+            })
+        })
+    }))
+}
+
 pub fn read_file_at_commit(
     commit_id: &str,
     file_path: &str,

@@ -264,3 +264,32 @@ pub fn read_memberships_from_tsv(path: &PathBuf) -> io::Result<Vec<AuthorCodeown
 
     Ok(memberships)
 }
+
+pub fn get_all_codeowners(cwd: &PathBuf) -> Result<HashSet<String>, io::Error> {
+    let mut all_codeowners = HashSet::new();
+
+    for location in CODEOWNERS_LOCATIONS.iter() {
+        let versions = crate::git_file_versions(location, cwd)?;
+
+        for version in versions {
+            if let Ok(content) = version {
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() > 1 {
+                        for part in &parts[1..] {
+                            if part.starts_with('@') {
+                                all_codeowners.insert(part.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(all_codeowners)
+}
