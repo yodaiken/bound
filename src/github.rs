@@ -17,7 +17,7 @@ pub fn get_token() -> Result<String, GHCliError> {
         .arg("auth")
         .arg("token")
         .output()
-        .map_err(|e| GHCliError::Io(e))?;
+        .map_err(GHCliError::Io)?;
 
     if output.status.success() {
         let token = String::from_utf8_lossy(&output.stdout).trim().to_string();

@@ -59,7 +59,7 @@ fn create_teams(
         res.insert(key, team);
     }
 
-    return Ok(res);
+    Ok(res)
 }
 
 fn write_teams_to_tsv(teams: &HashMap<(String, String), String>, output: &PathBuf) -> Result<()> {
@@ -67,10 +67,10 @@ fn write_teams_to_tsv(teams: &HashMap<(String, String), String>, output: &PathBu
         .delimiter(b'\t')
         .from_path(output)?;
 
-    writer.write_record(&["author_name", "author_email", "team"])?;
+    writer.write_record(["author_name", "author_email", "team"])?;
 
     for ((name, email), team) in teams {
-        writer.write_record(&[name, email, team])?;
+        writer.write_record([name, email, team])?;
     }
 
     writer.flush()?;
@@ -111,14 +111,12 @@ async fn get_all_org_members(
         for member in members {
             let (name, email) = if let Some(info) = user_cache.get(&member) {
                 info.clone()
+            } else if let Some(info) = get_user_info(api, &member).await? {
+                user_cache.insert(member.clone(), info.clone());
+                info
             } else {
-                if let Some(info) = get_user_info(api, &member).await? {
-                    user_cache.insert(member.clone(), info.clone());
-                    info
-                } else {
-                    member_progress.inc(1);
-                    continue;
-                }
+                member_progress.inc(1);
+                continue;
             };
             acms.push(AuthorCodeownerMemberships {
                 author_email: Some(email),
@@ -205,7 +203,6 @@ enum Commands {
 
 use bound::GithubApi;
 
-use tokio;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -249,7 +246,7 @@ async fn main() -> Result<()> {
         Commands::GhGetUserNameEmail { logins } => {
             let api = GithubApi::new()?;
             for login in logins {
-                match bound::get_user_info(&api, &login).await? {
+                match bound::get_user_info(&api, login).await? {
                     Some((name, email)) => {
                         if email.is_empty() {
                             println!("{} <not found>", name);
@@ -312,9 +309,9 @@ async fn main() -> Result<()> {
         }
 
         Commands::CreateTeams { input, output } => {
-            let memberships = read_memberships_from_tsv(&input)?;
+            let memberships = read_memberships_from_tsv(input)?;
             let teams = create_teams(memberships)?;
-            write_teams_to_tsv(&teams, &output)?;
+            write_teams_to_tsv(&teams, output)?;
             println!("Teams created and written to {}", output.display());
         }
 
