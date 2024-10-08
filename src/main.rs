@@ -177,7 +177,6 @@ enum Commands {
         #[arg(short, long, default_value = "codeowners.tsv")]
         codeowners_path: PathBuf,
     },
-
     AnalyzeByContributor {
         #[arg(short, long)]
         since: String,
@@ -187,6 +186,8 @@ enum Commands {
         directory: PathBuf,
         #[arg(short, long, default_value = "codeowners.tsv")]
         codeowners_path: PathBuf,
+        #[arg(short, long)]
+        owner: Option<String>,
     },
 }
 
@@ -430,12 +431,12 @@ async fn main() -> Result<()> {
                 println!();
             }
         }
-
         Commands::AnalyzeByContributor {
             since,
             until,
             directory,
             codeowners_path,
+            owner,
         } => {
             let memberships = read_memberships_from_tsv(codeowners_path)?;
             let commits =
@@ -443,19 +444,31 @@ async fn main() -> Result<()> {
             let analysis = bound::analyze_by_contributor(commits)?;
 
             for contributor_info in analysis {
+                if let Some(ref filter_owner) = owner {
+                    if !contributor_info
+                        .contributions
+                        .iter()
+                        .any(|c| &c.owner == filter_owner)
+                    {
+                        continue;
+                    }
+                }
+
                 println!(
                     "Contributor: {} <{}>",
                     contributor_info.author_name, contributor_info.author_email
                 );
                 for contribution in &contributor_info.contributions {
-                    println!("  Owner: {}", contribution.owner);
-                    println!(
-                        "    Changes: {} (+{}, -{})",
-                        contribution.total_insertions + contribution.total_deletions,
-                        contribution.total_insertions,
-                        contribution.total_deletions
-                    );
-                    println!("    Commits: {}", contribution.total_commits);
+                    if owner.is_none() || owner.as_ref() == Some(&contribution.owner) {
+                        println!("  Owner: {}", contribution.owner);
+                        println!(
+                            "    Changes: {} (+{}, -{})",
+                            contribution.total_insertions + contribution.total_deletions,
+                            contribution.total_insertions,
+                            contribution.total_deletions
+                        );
+                        println!("    Commits: {}", contribution.total_commits);
+                    }
                 }
                 println!();
             }
