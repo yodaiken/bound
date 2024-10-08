@@ -186,15 +186,7 @@ pub fn analyze_by_contributor(
     let mut result: Vec<ContributorInfo> = contributors
         .into_iter()
         .map(|((author_name, author_email), mut contributions)| {
-            contributions.sort_by(|a, b| {
-                if a.owner == "<unowned>" {
-                    std::cmp::Ordering::Greater
-                } else if b.owner == "<unowned>" {
-                    std::cmp::Ordering::Less
-                } else {
-                    a.owner.cmp(&b.owner)
-                }
-            });
+            contributions.sort_by(|a, b| b.total_commits.cmp(&a.total_commits));
             ContributorInfo {
                 author_name,
                 author_email,
