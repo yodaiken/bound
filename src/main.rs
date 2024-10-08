@@ -471,16 +471,14 @@ async fn main() -> Result<()> {
                     contributor_info.author_name, contributor_info.author_email
                 );
                 for contribution in &contributor_info.contributions {
-                    if owner.is_none() || owner.as_ref() == Some(&contribution.owner) {
-                        println!("  Owner: {}", contribution.owner);
-                        println!(
-                            "    Changes: {} (+{}, -{})",
-                            contribution.total_insertions + contribution.total_deletions,
-                            contribution.total_insertions,
-                            contribution.total_deletions
-                        );
-                        println!("    Commits: {}", contribution.total_commits);
-                    }
+                    println!("  Owner: {}", contribution.owner);
+                    println!(
+                        "    Changes: {} (+{}, -{})",
+                        contribution.total_insertions + contribution.total_deletions,
+                        contribution.total_insertions,
+                        contribution.total_deletions
+                    );
+                    println!("    Commits: {}", contribution.total_commits);
                 }
                 println!();
             }
