@@ -374,15 +374,17 @@ async fn main() -> Result<()> {
 
             for owner_info in analysis {
                 println!("Owner: {}", owner_info.owner);
-                println!("  Team Insertions: {}", owner_info.total_insertions_by_team);
-                println!("  Team Deletions: {}", owner_info.total_deletions_by_team);
+                println!(
+                    "  Team Changes: {} (+{}, -{})",
+                    owner_info.total_insertions_by_team + owner_info.total_deletions_by_team,
+                    owner_info.total_insertions_by_team,
+                    owner_info.total_deletions_by_team
+                );
                 println!("  Team Commits: {}", owner_info.total_commits_by_team);
                 println!(
-                    "  Others Insertions: {}",
-                    owner_info.total_insertions_by_others
-                );
-                println!(
-                    "  Others Deletions: {}",
+                    "  Others Changes: {} (+{}, -{})",
+                    owner_info.total_insertions_by_others + owner_info.total_deletions_by_others,
+                    owner_info.total_insertions_by_others,
                     owner_info.total_deletions_by_others
                 );
                 println!("  Others Commits: {}", owner_info.total_commits_by_others);
