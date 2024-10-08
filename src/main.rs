@@ -188,6 +188,8 @@ enum Commands {
         codeowners_path: PathBuf,
         #[arg(short, long)]
         owner: Option<String>,
+        #[arg(long)]
+        tsv: bool,
     },
 }
 
@@ -437,6 +439,7 @@ async fn main() -> Result<()> {
             directory,
             codeowners_path,
             owner,
+            tsv,
         } => {
             let memberships = read_memberships_from_tsv(codeowners_path)?;
 
@@ -456,31 +459,56 @@ async fn main() -> Result<()> {
                 bound::git_log_commits_with_codeowners(since, until, directory, Some(memberships))?;
             let analysis = bound::analyze_by_contributor(commits)?;
 
-            for contributor_info in analysis {
-                if let Some(filter_authors) = &filter_authors {
-                    if !filter_authors.contains(&(
-                        Some(contributor_info.author_email.clone()),
-                        Some(contributor_info.author_name.clone()),
-                    )) {
-                        continue;
+            if *tsv {
+                println!("author_name\tauthor_email\towner\tcommits\tchanges");
+                for contributor_info in analysis {
+                    if let Some(filter_authors) = &filter_authors {
+                        if !filter_authors.contains(&(
+                            Some(contributor_info.author_email.clone()),
+                            Some(contributor_info.author_name.clone()),
+                        )) {
+                            continue;
+                        }
+                    }
+
+                    for contribution in &contributor_info.contributions {
+                        println!(
+                            "{}\t{}\t{}\t{}\t{}",
+                            contributor_info.author_name,
+                            contributor_info.author_email,
+                            contribution.owner,
+                            contribution.total_commits,
+                            contribution.total_insertions + contribution.total_deletions
+                        );
                     }
                 }
+            } else {
+                for contributor_info in analysis {
+                    if let Some(filter_authors) = &filter_authors {
+                        if !filter_authors.contains(&(
+                            Some(contributor_info.author_email.clone()),
+                            Some(contributor_info.author_name.clone()),
+                        )) {
+                            continue;
+                        }
+                    }
 
-                println!(
-                    "Contributor: {} <{}>",
-                    contributor_info.author_name, contributor_info.author_email
-                );
-                for contribution in &contributor_info.contributions {
-                    println!("  Owner: {}", contribution.owner);
                     println!(
-                        "    Changes: {} (+{}, -{})",
-                        contribution.total_insertions + contribution.total_deletions,
-                        contribution.total_insertions,
-                        contribution.total_deletions
+                        "Contributor: {} <{}>",
+                        contributor_info.author_name, contributor_info.author_email
                     );
-                    println!("    Commits: {}", contribution.total_commits);
+                    for contribution in &contributor_info.contributions {
+                        println!("  Owner: {}", contribution.owner);
+                        println!(
+                            "    Changes: {} (+{}, -{})",
+                            contribution.total_insertions + contribution.total_deletions,
+                            contribution.total_insertions,
+                            contribution.total_deletions
+                        );
+                        println!("    Commits: {}", contribution.total_commits);
+                    }
+                    println!();
                 }
-                println!();
             }
         }
     }
