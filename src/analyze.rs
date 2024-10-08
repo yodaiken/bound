@@ -2,7 +2,7 @@ use std::{collections::HashMap, io};
 
 use crate::{CommitInfoWithCodeowner, FileChangeWithCodeowner};
 
-pub struct ContributorInfo {
+pub struct ContributorToOwnerInfo {
     pub author_name: String,
     pub author_email: String,
     pub metric_value: usize,
@@ -16,10 +16,10 @@ pub struct OwnerInfo {
     pub total_insertions_by_others: usize,
     pub total_deletions_by_others: usize,
     pub total_commits_by_others: usize,
-    pub top_outside_contributors_by_changes: Vec<ContributorInfo>,
-    pub top_outside_contributors_by_commits: Vec<ContributorInfo>,
-    pub top_team_contributors_by_changes: Vec<ContributorInfo>,
-    pub top_team_contributors_by_commits: Vec<ContributorInfo>,
+    pub top_outside_contributors_by_changes: Vec<ContributorToOwnerInfo>,
+    pub top_outside_contributors_by_commits: Vec<ContributorToOwnerInfo>,
+    pub top_team_contributors_by_changes: Vec<ContributorToOwnerInfo>,
+    pub top_team_contributors_by_commits: Vec<ContributorToOwnerInfo>,
 }
 
 pub fn analyze_by_owner(
@@ -105,10 +105,10 @@ fn update_top_contributors(
     if let Some(contributors) = contributors {
         let mut contributors: Vec<_> = contributors.iter().collect();
         contributors.sort_by(|(_, (changes_a, _)), (_, (changes_b, _))| changes_b.cmp(changes_a));
-        let top_by_changes: Vec<ContributorInfo> = contributors
+        let top_by_changes: Vec<ContributorToOwnerInfo> = contributors
             .iter()
             .take(10)
-            .map(|((name, email), (changes, _))| ContributorInfo {
+            .map(|((name, email), (changes, _))| ContributorToOwnerInfo {
                 author_name: name.clone(),
                 author_email: email.clone(),
                 metric_value: *changes,
@@ -116,10 +116,10 @@ fn update_top_contributors(
             .collect();
 
         contributors.sort_by(|(_, (_, commits_a)), (_, (_, commits_b))| commits_b.cmp(commits_a));
-        let top_by_commits: Vec<ContributorInfo> = contributors
+        let top_by_commits: Vec<ContributorToOwnerInfo> = contributors
             .iter()
             .take(10)
-            .map(|((name, email), (_, commits))| ContributorInfo {
+            .map(|((name, email), (_, commits))| ContributorToOwnerInfo {
                 author_name: name.clone(),
                 author_email: email.clone(),
                 metric_value: *commits,
@@ -134,4 +134,76 @@ fn update_top_contributors(
             owner_info.top_outside_contributors_by_commits = top_by_commits;
         }
     }
+}
+
+pub struct ContributionsByOwnerInfo {
+    pub owner: String,
+    pub total_insertions: usize,
+    pub total_deletions: usize,
+    pub total_commits: usize,
+}
+
+pub struct ContributorInfo {
+    pub author_name: String,
+    pub author_email: String,
+    pub contributions: Vec<ContributionsByOwnerInfo>,
+}
+
+pub fn analyze_by_contributor(
+    commits: impl Iterator<Item = Result<CommitInfoWithCodeowner, io::Error>>,
+) -> Result<Vec<ContributorInfo>, io::Error> {
+    let mut contributors: HashMap<(String, String), Vec<ContributionsByOwnerInfo>> = HashMap::new();
+
+    for commit_result in commits {
+        let commit = commit_result?;
+        let contributor_key = (commit.author_name.clone(), commit.author_email.clone());
+
+        for change in &commit.file_changes {
+            let owner = match &change.codeowners {
+                Some(codeowners) if !codeowners.is_empty() => codeowners[0].clone(),
+                _ => "<unowned>".to_string(),
+            };
+
+            let contributions = contributors
+                .entry(contributor_key.clone())
+                .or_insert_with(Vec::new);
+
+            if let Some(contribution) = contributions.iter_mut().find(|c| c.owner == owner) {
+                contribution.total_insertions += change.insertions as usize;
+                contribution.total_deletions += change.deletions as usize;
+                contribution.total_commits += 1;
+            } else {
+                contributions.push(ContributionsByOwnerInfo {
+                    owner,
+                    total_insertions: change.insertions as usize,
+                    total_deletions: change.deletions as usize,
+                    total_commits: 1,
+                });
+            }
+        }
+    }
+
+    let mut result: Vec<ContributorInfo> = contributors
+        .into_iter()
+        .map(|((author_name, author_email), mut contributions)| {
+            contributions.sort_by(|a, b| {
+                if a.owner == "<unowned>" {
+                    std::cmp::Ordering::Greater
+                } else if b.owner == "<unowned>" {
+                    std::cmp::Ordering::Less
+                } else {
+                    a.owner.cmp(&b.owner)
+                }
+            });
+            ContributorInfo {
+                author_name,
+                author_email,
+                contributions,
+            }
+        })
+        .collect();
+
+    result.sort_by(|a, b| a.author_name.cmp(&b.author_name));
+
+    Ok(result)
 }

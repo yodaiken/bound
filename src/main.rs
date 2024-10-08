@@ -177,6 +177,17 @@ enum Commands {
         #[arg(short, long, default_value = "codeowners.tsv")]
         codeowners_path: PathBuf,
     },
+
+    AnalyzeByContributor {
+        #[arg(short, long)]
+        since: String,
+        #[arg(short, long)]
+        until: String,
+        #[arg(short, long, default_value = ".")]
+        directory: PathBuf,
+        #[arg(short, long, default_value = "codeowners.tsv")]
+        codeowners_path: PathBuf,
+    },
 }
 
 use bound::GithubApi;
@@ -415,6 +426,36 @@ async fn main() -> Result<()> {
                         "    {} <{}>: {}",
                         contributor.author_name, contributor.author_email, contributor.metric_value
                     );
+                }
+                println!();
+            }
+        }
+
+        Commands::AnalyzeByContributor {
+            since,
+            until,
+            directory,
+            codeowners_path,
+        } => {
+            let memberships = read_memberships_from_tsv(codeowners_path)?;
+            let commits =
+                bound::git_log_commits_with_codeowners(since, until, directory, Some(memberships))?;
+            let analysis = bound::analyze_by_contributor(commits)?;
+
+            for contributor_info in analysis {
+                println!(
+                    "Contributor: {} <{}>",
+                    contributor_info.author_name, contributor_info.author_email
+                );
+                for contribution in &contributor_info.contributions {
+                    println!("  Owner: {}", contribution.owner);
+                    println!(
+                        "    Changes: {} (+{}, -{})",
+                        contribution.total_insertions + contribution.total_deletions,
+                        contribution.total_insertions,
+                        contribution.total_deletions
+                    );
+                    println!("    Commits: {}", contribution.total_commits);
                 }
                 println!();
             }
