@@ -439,17 +439,29 @@ async fn main() -> Result<()> {
             owner,
         } => {
             let memberships = read_memberships_from_tsv(codeowners_path)?;
+
+            let filter_authors = if let Some(owner) = owner {
+                Some(
+                    memberships
+                        .iter()
+                        .filter(|m| &m.codeowner == owner)
+                        .map(|m| (m.author_email.clone(), m.author_name.clone()))
+                        .collect::<HashSet<_>>(),
+                )
+            } else {
+                None
+            };
+
             let commits =
                 bound::git_log_commits_with_codeowners(since, until, directory, Some(memberships))?;
             let analysis = bound::analyze_by_contributor(commits)?;
 
             for contributor_info in analysis {
-                if let Some(ref filter_owner) = owner {
-                    if !contributor_info
-                        .contributions
-                        .iter()
-                        .any(|c| &c.owner == filter_owner)
-                    {
+                if let Some(filter_authors) = &filter_authors {
+                    if !filter_authors.contains(&(
+                        Some(contributor_info.author_email.clone()),
+                        Some(contributor_info.author_name.clone()),
+                    )) {
                         continue;
                     }
                 }
