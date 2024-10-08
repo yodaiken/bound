@@ -1,7 +1,9 @@
+mod analyze;
 mod commit;
 mod github;
 mod owner;
 
+pub use analyze::{analyze_by_owner, ContributorInfo, OwnerInfo};
 pub use commit::{git_file_versions, git_log_commits, read_file_at_commit, CommitInfo, FileChange};
 pub use github::{
     get_github_org_logins, get_github_team_members, get_github_team_slugs, get_token,

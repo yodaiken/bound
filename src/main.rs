@@ -167,6 +167,16 @@ enum Commands {
         #[arg(short, long, default_value = "codeowners.tsv")]
         codeowners_path: PathBuf,
     },
+    AnalyzeByOwner {
+        #[arg(short, long)]
+        since: String,
+        #[arg(short, long)]
+        until: String,
+        #[arg(short, long, default_value = ".")]
+        directory: PathBuf,
+        #[arg(short, long, default_value = "codeowners.tsv")]
+        codeowners_path: PathBuf,
+    },
 }
 
 use bound::GithubApi;
@@ -350,6 +360,62 @@ async fn main() -> Result<()> {
             let api = GithubApi::new()?;
             let memberships = get_all_org_members(&api, org).await?;
             bound::write_memberships_to_tsv(&memberships, codeowners_path)?;
+        }
+        Commands::AnalyzeByOwner {
+            since,
+            until,
+            directory,
+            codeowners_path,
+        } => {
+            let memberships = read_memberships_from_tsv(codeowners_path)?;
+            let commits =
+                bound::git_log_commits_with_codeowners(since, until, directory, Some(memberships))?;
+            let analysis = bound::analyze_by_owner(commits)?;
+
+            for owner_info in analysis {
+                println!("Owner: {}", owner_info.owner);
+                println!("  Team Insertions: {}", owner_info.total_insertions_by_team);
+                println!("  Team Deletions: {}", owner_info.total_deletions_by_team);
+                println!("  Team Commits: {}", owner_info.total_commits_by_team);
+                println!(
+                    "  Others Insertions: {}",
+                    owner_info.total_insertions_by_others
+                );
+                println!(
+                    "  Others Deletions: {}",
+                    owner_info.total_deletions_by_others
+                );
+                println!("  Others Commits: {}", owner_info.total_commits_by_others);
+                println!("  Top Outside Contributors by Changes:");
+                for contributor in &owner_info.top_outside_contributors_by_changes {
+                    println!(
+                        "    {} <{}>: {}",
+                        contributor.author_name, contributor.author_email, contributor.metric_value
+                    );
+                }
+                println!("  Top Outside Contributors by Commits:");
+                for contributor in &owner_info.top_outside_contributors_by_commits {
+                    println!(
+                        "    {} <{}>: {}",
+                        contributor.author_name, contributor.author_email, contributor.metric_value
+                    );
+                }
+                println!("  Top Team Contributors by Changes:");
+                for contributor in &owner_info.top_team_contributors_by_changes {
+                    println!(
+                        "    {} <{}>: {}",
+                        contributor.author_name, contributor.author_email, contributor.metric_value
+                    );
+                }
+                println!("  Top Team Contributors by Commits:");
+                for contributor in &owner_info.top_team_contributors_by_commits {
+                    println!(
+                        "    {} <{}>: {}",
+                        contributor.author_name, contributor.author_email, contributor.metric_value
+                    );
+                }
+                println!();
+            }
         }
     }
 
