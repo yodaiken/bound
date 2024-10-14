@@ -193,6 +193,8 @@ enum Commands {
         directory: PathBuf,
         #[arg(short, long, default_value = "codeowners.tsv")]
         codeowners_path: PathBuf,
+        #[arg(long)]
+        adjusted: bool,
     },
     AnalyzeByContributor {
         #[arg(short, long)]
@@ -207,6 +209,8 @@ enum Commands {
         owner: Option<String>,
         #[arg(long)]
         tsv: bool,
+        #[arg(long)]
+        adjusted: bool,
     },
 }
 
@@ -397,12 +401,12 @@ async fn main() -> Result<()> {
             until,
             directory,
             codeowners_path,
+            adjusted,
         } => {
             let memberships = read_memberships_from_tsv(codeowners_path)?;
             let commits =
                 bound::git_log_commits_with_codeowners(since, until, directory, Some(memberships))?;
-            let analysis = bound::analyze_by_owner(commits)?;
-
+            let analysis = bound::analyze_by_owner(commits, *adjusted)?;
             for owner_info in analysis {
                 println!("Owner: {}", owner_info.owner);
                 println!(
@@ -411,14 +415,30 @@ async fn main() -> Result<()> {
                     owner_info.total_insertions_by_team,
                     owner_info.total_deletions_by_team
                 );
-                println!("  Team Commits: {}", owner_info.total_commits_by_team);
+                println!("  Team Commits: {:.2}", owner_info.total_commits_by_team);
+                if *adjusted {
+                    println!(
+                        "  Adjusted Team Changes: {} (Commits: {:.2})",
+                        owner_info.adjusted_changes_by_team, owner_info.adjusted_commits_by_team
+                    );
+                }
                 println!(
                     "  Others Changes: {} (+{}, -{})",
                     owner_info.total_insertions_by_others + owner_info.total_deletions_by_others,
                     owner_info.total_insertions_by_others,
                     owner_info.total_deletions_by_others
                 );
-                println!("  Others Commits: {}", owner_info.total_commits_by_others);
+                println!(
+                    "  Others Commits: {:.2}",
+                    owner_info.total_commits_by_others
+                );
+                if *adjusted {
+                    println!(
+                        "  Adjusted Others Changes: {} (Commits: {:.2})",
+                        owner_info.adjusted_changes_by_others,
+                        owner_info.adjusted_commits_by_others
+                    );
+                }
                 println!("  Top Outside Contributors by Changes:");
                 for contributor in &owner_info.top_outside_contributors_by_changes {
                     println!(
@@ -457,6 +477,7 @@ async fn main() -> Result<()> {
             codeowners_path,
             owner,
             tsv,
+            adjusted,
         } => {
             let memberships = read_memberships_from_tsv(codeowners_path)?;
 
@@ -474,10 +495,13 @@ async fn main() -> Result<()> {
 
             let commits =
                 bound::git_log_commits_with_codeowners(since, until, directory, Some(memberships))?;
-            let analysis = bound::analyze_by_contributor(commits)?;
-
+            let analysis = bound::analyze_by_contributor(commits, *adjusted)?;
             if *tsv {
-                println!("author_name\tauthor_email\towner\tcommits\tchanges");
+                if *adjusted {
+                    println!("author_name\tauthor_email\towner\tcommits\tchanges\tadjusted_commits\tadjusted_changes");
+                } else {
+                    println!("author_name\tauthor_email\towner\tcommits\tchanges");
+                }
                 for contributor_info in analysis {
                     if let Some(filter_authors) = &filter_authors {
                         if !filter_authors.contains(&(
@@ -489,14 +513,27 @@ async fn main() -> Result<()> {
                     }
 
                     for contribution in &contributor_info.contributions {
-                        println!(
-                            "{}\t{}\t{}\t{}\t{}",
-                            contributor_info.author_name,
-                            contributor_info.author_email,
-                            contribution.owner,
-                            contribution.total_commits,
-                            contribution.total_insertions + contribution.total_deletions
-                        );
+                        if *adjusted {
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}\t{:.2}\t{}",
+                                contributor_info.author_name,
+                                contributor_info.author_email,
+                                contribution.owner,
+                                contribution.total_commits,
+                                contribution.total_insertions + contribution.total_deletions,
+                                contribution.adjusted_commits,
+                                contribution.adjusted_changes
+                            );
+                        } else {
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}",
+                                contributor_info.author_name,
+                                contributor_info.author_email,
+                                contribution.owner,
+                                contribution.total_commits,
+                                contribution.total_insertions + contribution.total_deletions
+                            );
+                        }
                     }
                 }
             } else {
@@ -523,6 +560,10 @@ async fn main() -> Result<()> {
                             contribution.total_deletions
                         );
                         println!("    Commits: {}", contribution.total_commits);
+                        if *adjusted {
+                            println!("    Adjusted Changes: {}", contribution.adjusted_changes);
+                            println!("    Adjusted Commits: {:.2}", contribution.adjusted_commits);
+                        }
                     }
                     println!();
                 }
