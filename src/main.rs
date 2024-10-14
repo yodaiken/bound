@@ -33,12 +33,29 @@ async fn get_all_org_members(
     api: &GithubApi,
     org: &str,
 ) -> Result<Vec<AuthorCodeownerMemberships>> {
+    let progress_style = ProgressStyle::default_spinner()
+        .template("{spinner:.green} {msg}")
+        .unwrap();
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(progress_style);
+    progress.set_message("Fetching GitHub team slugs...");
+
     let teams = get_github_team_slugs(api, org).await?;
+
+    progress.finish_with_message("GitHub team slugs fetched successfully.");
 
     let num_teams = teams.len();
 
-    // Fetch all codeowners
+    let progress_style = ProgressStyle::default_spinner()
+        .template("{spinner:.green} {msg}")
+        .unwrap();
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(progress_style);
+    progress.set_message("Fetching all codeowners...");
+
     let all_codeowners = bound::get_all_codeowners(&std::path::PathBuf::from("."))?;
+
+    progress.finish_with_message("All codeowners fetched successfully.");
 
     // Filter teams to only include those that are codeowners
     let teams: Vec<String> = teams
@@ -47,7 +64,7 @@ async fn get_all_org_members(
         .collect();
 
     println!(
-        "Fetched {} Github Teams in {}, eliminated {} non-codeowning teams",
+        "Fetched {} Github Teams in {}, eliminated {} non-codeowning teams.",
         num_teams,
         org,
         num_teams - teams.len(),
