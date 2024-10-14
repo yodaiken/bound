@@ -1,4 +1,7 @@
 [package]
+description = "A tool for understanding boundaries in Git repositories"
+license = "MIT"
+
 name = "bound"
 version = "0.1.0"
 edition = "2021"
