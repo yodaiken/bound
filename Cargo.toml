@@ -2,7 +2,7 @@
 description = "A tool for understanding boundaries in Git repositories"
 license = "MIT"
 
-name = "bound"
+name = "ybound"
 version = "0.1.0"
 edition = "2021"
 
