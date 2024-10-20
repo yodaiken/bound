@@ -80,7 +80,8 @@ pub fn analyze_by_owner(
                         owner_info.total_deletions_by_team += change.deletions as usize;
                         owner_info.total_commits_by_team += 1;
                         if adjusted {
-                            owner_info.adjusted_changes_by_team += change.insertions as usize;
+                            let total_changes = (change.insertions + change.deletions) as usize;
+                            owner_info.adjusted_changes_by_team += total_changes;
                             let commit_weight = if commit_total_insertions > 0 {
                                 *commit_changes_by_owner.get(owner).unwrap_or(&0) as f64
                                     / commit_total_insertions as f64
@@ -95,7 +96,8 @@ pub fn analyze_by_owner(
                         owner_info.total_deletions_by_others += change.deletions as usize;
                         owner_info.total_commits_by_others += 1;
                         if adjusted {
-                            owner_info.adjusted_changes_by_others += change.insertions as usize;
+                            let total_changes = (change.insertions + change.deletions) as usize;
+                            owner_info.adjusted_changes_by_others += total_changes;
                             let commit_weight = if commit_total_insertions > 0 {
                                 *commit_changes_by_owner.get(owner).unwrap_or(&0) as f64
                                     / commit_total_insertions as f64
@@ -202,18 +204,18 @@ pub fn analyze_by_contributor(
     for commit_result in commits {
         let commit = commit_result?;
         let contributor_key = (commit.author_name.clone(), commit.author_email.clone());
-
-        let mut commit_total_insertions: usize = 0;
+        let mut commit_total_changes: usize = 0;
         let mut commit_changes_by_owner: HashMap<String, usize> = HashMap::new();
 
-        // First pass: calculate total insertions for this commit
+        // First pass: calculate total changes for this commit
         for change in &commit.file_changes {
             let owner = match &change.codeowners {
                 Some(codeowners) if !codeowners.is_empty() => codeowners[0].clone(),
                 _ => "<unowned>".to_string(),
             };
-            *commit_changes_by_owner.entry(owner).or_insert(0) += change.insertions as usize;
-            commit_total_insertions += change.insertions as usize;
+            let total_changes = (change.insertions + change.deletions) as usize;
+            *commit_changes_by_owner.entry(owner).or_insert(0) += total_changes;
+            commit_total_changes += total_changes;
         }
 
         // Second pass: update metrics
@@ -231,10 +233,11 @@ pub fn analyze_by_contributor(
                 contribution.total_deletions += change.deletions as usize;
                 contribution.total_commits += 1;
                 if adjusted {
-                    contribution.adjusted_changes += change.insertions as usize;
-                    let commit_weight = if commit_total_insertions > 0 {
+                    let total_changes = (change.insertions + change.deletions) as usize;
+                    contribution.adjusted_changes += total_changes;
+                    let commit_weight = if commit_total_changes > 0 {
                         *commit_changes_by_owner.get(&owner).unwrap_or(&0) as f64
-                            / commit_total_insertions as f64
+                            / commit_total_changes as f64
                     } else {
                         0.0
                     };
@@ -252,9 +255,9 @@ pub fn analyze_by_contributor(
                         0
                     },
                     adjusted_commits: if adjusted {
-                        if commit_total_insertions > 0 {
+                        if commit_total_changes > 0 {
                             *commit_changes_by_owner.get(&owner).unwrap_or(&0) as f64
-                                / commit_total_insertions as f64
+                                / commit_total_changes as f64
                         } else {
                             0.0
                         }
